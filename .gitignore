@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+venv/
+venv*/
+.env
+*.db
+data/
+config.json
+!config.json.example
+*.tar.gz
+*.bak

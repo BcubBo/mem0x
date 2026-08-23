@@ -1,0 +1,29 @@
+# mem0xAPI 记忆增强服务
+# 启动: sudo docker compose -f docker-compose.mem0x.yml up -d
+# 重启: sudo docker compose -f docker-compose.mem0x.yml restart
+# 日志: sudo docker compose -f docker-compose.mem0x.yml logs -f
+
+services:
+  mem0x:
+    image: mem0xapi:0.1.5
+    container_name: mem0xAPI
+    restart: unless-stopped
+    ports:
+      - "28768:28768"
+    volumes:
+      - /home/ubuntu/.mem0x/data:/app/data
+      - /home/ubuntu/.mem0x/config-compose.json:/app/config.json:ro
+    environment:
+      MEM0X_CONFIG: /app/config.json
+    networks:
+      - mem0x-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:28768/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+networks:
+  mem0x-net:
+    external: true

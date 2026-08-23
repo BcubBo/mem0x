@@ -1,0 +1,220 @@
+"""auto_expire — 自动过期清理模块（v2）
+
+直接用 Qdrant scroll + filter 扫描，零 embedding 调用。
+按 user_id 过滤 → 按 created_at 排序 → 检查 lane TTL / expires 标记 → 删除过期记忆。
+
+旧版用 memory.search(query="记忆") 分页扫描，每次 search 触发 embedding + rerank，
+11000+ 条记忆产生 3000+ 次 API 调用，烧光半个月14B模型额度。已废弃。
+"""
+from __future__ import annotations
+
+import logging
+import re
+import threading
+import time
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional
+
+logger = logging.getLogger("mem0x.auto_expire")
+
+# 默认扫描间隔（秒）
+DEFAULT_INTERVAL = 3600  # 1小时
+# 每批扫描数量（Qdrant scroll batch）
+BATCH_SIZE = 200
+# 最大扫描轮数（安全阀，防止无限循环）
+MAX_SCROLL_ROUNDS = 200
+
+# lane → TTL 天数（None = 永不衰减）
+_LANE_TTL = {
+    "identity": None,
+    "preference": None,
+    "project": 180,
+    "emotion": 5,
+    "default": 30,
+}
+
+_EXPIRES_RE = re.compile(r"\[expires:(\d{4}-\d{2}-\d{2})\]")
+_LANE_RE = re.compile(r"\[lane:(\w+)\]")
+
+# 全局状态
+_running = False
+_thread: Optional[threading.Thread] = None
+
+
+def _is_expired(data: str, created_at: Optional[str]) -> bool:
+    """判断单条记忆是否过期。纯字符串解析，零 API 调用。"""
+    # 1. 显式 expires 标记
+    m = _EXPIRES_RE.search(data)
+    if m:
+        try:
+            exp = datetime.fromisoformat(m.group(1))
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            return datetime.now(timezone.utc) > exp
+        except ValueError:
+            pass
+
+    # 2. lane TTL
+    lm = _LANE_RE.search(data)
+    if lm and created_at:
+        ttl_days = _LANE_TTL.get(lm.group(1))
+        if ttl_days is None:
+            return False  # 永不衰减
+        try:
+            created = datetime.fromisoformat(created_at)
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            return datetime.now(timezone.utc) > created + timedelta(days=ttl_days)
+        except ValueError:
+            pass
+
+    return False
+
+
+def _get_qdrant_client():
+    """从 mem0 实例获取 Qdrant 客户端。"""
+    from wrapper.mem0_runtime import get_memory
+    mem = get_memory()
+    if mem is None:
+        return None, None
+    client = mem.vector_store.client
+    collection = getattr(mem, "collection_name", "mem0")
+    return client, collection
+
+
+def run_expire_cycle(neo4j_hook=None, user_id: str = "bo") -> int:
+    """执行一轮过期清理。
+
+    直接用 Qdrant scroll + filter，零 embedding 调用。
+
+    Returns:
+        删除数量
+    """
+    from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+    client, collection = _get_qdrant_client()
+    if client is None:
+        logger.warning("auto_expire: Qdrant 客户端不可用")
+        return 0
+
+    # 只扫描指定用户的记忆
+    # TODO: 加 created_at Range 预过滤需要写入链路存数字时间戳
+    user_filter = Filter(
+        must=[
+            FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+        ]
+    )
+
+    deleted = 0
+    scanned = 0
+    offset = None
+
+    try:
+        for _round in range(MAX_SCROLL_ROUNDS):
+            result = client.scroll(
+                collection_name=collection,
+                scroll_filter=user_filter,
+                limit=BATCH_SIZE,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            points, next_offset = result
+            if not points:
+                break
+
+            for point in points:
+                scanned += 1
+                data = point.payload.get("data", "")
+                created_at = point.payload.get("created_at")
+
+                if not data or not _is_expired(data, created_at):
+                    continue
+
+                # 跳过核心记忆
+                try:
+                    from wrapper.core_memory import is_core_memory
+                    if is_core_memory(point.id):
+                        continue
+                except ImportError:
+                    pass
+
+                try:
+                    client.delete(
+                        collection_name=collection,
+                        points_selector=[point.id],
+                    )
+                    deleted += 1
+                    logger.info("已删除过期记忆: %s | %.40s", point.id, data)
+                except Exception as e:
+                    logger.warning("删除失败 %s: %s", point.id, e)
+
+                # Neo4j 同步清理
+                if neo4j_hook and neo4j_hook.enabled:
+                    try:
+                        neo4j_hook.cleanup(point.id)
+                    except Exception as e:
+                        logger.debug("Neo4j cleanup 失败 %s: %s", point.id, e)
+
+            if next_offset is None:
+                break
+            offset = next_offset
+
+    except Exception as e:
+        logger.error("auto_expire 扫描异常 (已扫描 %d, 已删除 %d): %s", scanned, deleted, e)
+
+    logger.info("auto_expire 完成: 扫描 %d 条, 删除 %d 条", scanned, deleted)
+    return deleted
+
+
+def _background_loop(interval: int = DEFAULT_INTERVAL):
+    """后台循环线程。"""
+    global _running
+    logger.info("auto_expire 后台线程启动，间隔 %ds", interval)
+
+    # 延迟获取 Neo4j hook
+    neo4j_hook = None
+    try:
+        from wrapper.neo4j_hook import get_hook
+        neo4j_hook = get_hook()
+    except Exception:
+        pass
+
+    while _running:
+        try:
+            deleted = run_expire_cycle(neo4j_hook=neo4j_hook)
+            if deleted > 0:
+                logger.info("本轮清理 %d 条过期记忆", deleted)
+        except Exception as e:
+            logger.error("auto_expire 循环异常: %s", e)
+
+        time.sleep(interval)
+
+    logger.info("auto_expire 后台线程已停止")
+
+
+def start(memory_getter=None, interval: int = DEFAULT_INTERVAL):
+    """启动后台清理线程。memory_getter 保留参数兼容旧调用，v2 内部自行获取 Qdrant。"""
+    global _running, _thread
+    if _running:
+        logger.warning("auto_expire 已在运行")
+        return
+
+    _running = True
+    _thread = threading.Thread(
+        target=_background_loop,
+        args=(interval,),
+        daemon=True,
+        name="auto-expire",
+    )
+    _thread.start()
+
+
+def stop():
+    """停止后台清理线程。"""
+    global _running
+    _running = False
+
+
+def is_running() -> bool:
+    return _running

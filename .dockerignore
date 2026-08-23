@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.env
+*.db
+data/
+config.json
+.git/
+*.md

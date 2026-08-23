@@ -1,0 +1,86 @@
+{
+  "mem0": {
+    "llm": {
+      "provider": "openai",
+      "config": {
+        "model": "Qwen/Qwen2.5-14B-Instruct",
+        "api_key": "YOUR_API_KEY",
+        "openai_base_url": "https://api.siliconflow.cn/v1"
+      }
+    },
+    "embedder": {
+      "provider": "openai",
+      "config": {
+        "model": "BAAI/bge-m3",
+        "api_key": "YOUR_API_KEY",
+        "openai_base_url": "https://api.siliconflow.cn/v1"
+      }
+    },
+    "vector_store": {
+      "provider": "qdrant",
+      "config": {
+        "url": "http://127.0.0.1:6333",
+        "api_key": "your-qdrant-api-key",
+        "embedding_model_dims": 1024,
+        "collection_name": "mem0"
+      }
+    },
+    "custom_instructions": "从对话中提取值得长期记住的事实。\n\n格式：[P0][tech][lane:project] 事实内容\n\n示例：\n[P0][tech] 端口从8080改为9090\n[P1][lesson] 不要随意改动生产环境\n[P2][preference] 用户偏好简洁输出"
+  },
+  "rerank": {
+    "provider": "siliconflow",
+    "config": {
+      "model": "BAAI/bge-reranker-v2-m3",
+      "api_key": "YOUR_API_KEY",
+      "openai_base_url": "https://api.siliconflow.cn/v1"
+    }
+  },
+  "neo4j": {
+    "enabled": true,
+    "uri": "bolt://localhost:7687",
+    "username": "neo4j",
+    "password": "your-neo4j-password"
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 28768
+  },
+  "scoring": {
+    "weights": {
+      "vector": 0.3,
+      "bm25": 0.2,
+      "time": 0.12,
+      "reliability": 0.1,
+      "heat": 0.13,
+      "confidence": 0.15
+    },
+    "recency_lambda": 0.05,
+    "rerank_weight": 0.4
+  },
+  "salience": {
+    "initial_value": 0.5,
+    "access_boost": 0.1,
+    "decay_rate": 0.023
+  },
+  "dedup": {
+    "merge_threshold": 0.85,
+    "update_threshold": 0.7
+  },
+  "data_dir": "data",
+  "hot_archive": {
+    "interval": 21600,
+    "salience_threshold": 0.8,
+    "access_threshold": 5,
+    "category": "hot_archive"
+  },
+  "consolidation": {
+    "llm": {
+      "provider": "openai",
+      "config": {
+        "model": "Qwen/Qwen3-8B",
+        "api_key": "YOUR_API_KEY",
+        "openai_base_url": "https://api.siliconflow.cn/v1"
+      }
+    }
+  }
+}

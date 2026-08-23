@@ -434,6 +434,10 @@ sudo docker save mem0xapi:0.1.15 | gzip > mem0xapi-0.1.15.tar.gz
 gunzip -c mem0xapi-0.1.15.tar.gz | sudo docker load
 ```
 
+## 致敬
+
+本项目的设计思路和架构灵感来源于 [aiduMEI](https://github.com/BcubBo/aiduMEI)，感谢其在 AI 记忆系统领域的探索和实践。
+
 ## 许可证
 
 MIT License

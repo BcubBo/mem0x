@@ -2,6 +2,8 @@
 
 自托管 AI 记忆增强服务，基于 [mem0ai](https://github.com/mem0ai/mem0) 构建。为 AI Agent 提供持久化记忆能力，支持向量搜索、知识图谱、智能去重和矛盾消解。
 
+本项目的设计思路和架构灵感来源于 [aiduMEI](https://github.com/BcubBo/aiduMEI)，感谢其在 AI 记忆系统领域的探索和实践。
+
 ## 架构
 
 ```
@@ -433,10 +435,6 @@ sudo docker save mem0xapi:0.1.15 | gzip > mem0xapi-0.1.15.tar.gz
 # 恢复镜像
 gunzip -c mem0xapi-0.1.15.tar.gz | sudo docker load
 ```
-
-## 致敬
-
-本项目的设计思路和架构灵感来源于 [aiduMEI](https://github.com/BcubBo/aiduMEI)，感谢其在 AI 记忆系统领域的探索和实践。
 
 ## 许可证
 

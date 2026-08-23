@@ -153,18 +153,20 @@ def safe_add(
         pass
 
     # 3. 矛盾消解（规则驱动，零 LLM 成本，优先于 dedup）
-    conflict_result = detect_and_resolve(memory, content, filters=filters)
+    conflict_result = detect_and_resolve(memory, content, filters=filters, pre_results=shared_results)
     if conflict_result:
         logger.info("⚔️ pipeline.conflict: resolved=%d", conflict_result.get("resolved", 0))
-        # 矛盾消解后，仍需经过 LLM 语义判重
-        edit_result = self_edit_on_add(memory, content, _pre_candidates=shared_results)
-        if edit_result:
-            logger.info("🧠 pipeline.semantic_after_conflict: action=%s", edit_result.get("action"))
-            return {
-                "action": "semantic", "memory_id": edit_result["memory_id"],
-                "sub_action": edit_result["action"], "confidence": edit_result["confidence"],
-                "reason": edit_result["reason"],
-            }
+        # 矛盾消解后，用 Jaccard 快速去重（不调 LLM，省~30秒）
+        dup = find_duplicate(memory, content, filters, _pre_results=shared_results)
+        if dup:
+            mem_id, old_text, sim = dup
+            logger.info("🔄 pipeline.duplicate_after_conflict: memory_id=%s, similarity=%.2f", mem_id, sim)
+            try:
+                memory.update(mem_id, content)
+            except Exception as e:
+                logger.warning("dedup update 失败: %s", e)
+                return {"action": "error", "reason": f"dedup update failed: {e}"}
+            return {"action": "duplicate", "memory_id": mem_id, "similarity": sim}
         # 语义判重通过，写入新记忆
         try:
             add_kwargs = {
@@ -202,17 +204,7 @@ def safe_add(
             return {"action": "error", "reason": f"dedup update failed: {e}"}
         return {"action": "duplicate", "memory_id": mem_id, "similarity": sim}
 
-    # 5. LLM 语义判重（用共享候选）
-    edit_result = self_edit_on_add(memory, content, _pre_candidates=shared_results)
-    if edit_result:
-        logger.info("🧠 pipeline.semantic: action=%s, memory_id=%s", edit_result.get("action"), edit_result.get("memory_id"))
-        return {
-            "action": "semantic", "memory_id": edit_result["memory_id"],
-            "sub_action": edit_result["action"], "confidence": edit_result["confidence"],
-            "reason": edit_result["reason"],
-        }
-
-    # 6. 正常写入
+    # 5. 正常写入（矛盾消解已判断关系，Jaccard已去重，跳过LLM语义判重）
     try:
         add_kwargs = {
             "user_id": user_id,

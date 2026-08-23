@@ -24,6 +24,7 @@ import re
 import sqlite3
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -73,7 +74,8 @@ def _get_llm_config() -> dict:
                 "base_url": llm_cfg.get("openai_base_url") or llm_cfg.get("base_url", ""),
                 "api_key": llm_cfg.get("api_key", ""),
                 "max_tokens": llm_cfg.get("max_tokens", 5000),
-                "max_llm_calls": llm_cfg.get("max_llm_calls", 3),
+                "max_llm_calls": llm_cfg.get("max_llm_calls", 1),
+                "num_votes": llm_cfg.get("num_votes", 2),
             }
             if _llm_config_cache["api_key"] and _llm_config_cache["model"] and _llm_config_cache["base_url"]:
                 _llm_config_cached_at = time.time()
@@ -249,6 +251,66 @@ def _llm_judge_contradiction(
     return None
 
 
+def _llm_judge_parallel(
+    new_text: str,
+    old_text: str,
+    new_meta: dict = None,
+    old_meta: dict = None,
+    old_created_at: str = None,
+    num_votes: int = 2,
+) -> Optional[Dict[str, Any]]:
+    """并行投票：同时发起 num_votes 次 LLM 调用，多数票决定结果。"""
+    def _single_vote():
+        return _llm_judge_contradiction(
+            new_text, old_text,
+            new_meta=new_meta, old_meta=old_meta,
+            old_created_at=old_created_at,
+        )
+
+    results = [None] * num_votes
+    with ThreadPoolExecutor(max_workers=num_votes) as executor:
+        futures = {executor.submit(_single_vote): i for i in range(num_votes)}
+        for future in as_completed(futures):
+            idx = futures[future]
+            try:
+                results[idx] = future.result()
+            except Exception as e:
+                logger.warning("LLM 投票 %d/%d 失败: %s", idx + 1, num_votes, e)
+
+    valid = [r for r in results if r is not None]
+    if not valid:
+        logger.warning("所有 LLM 投票均失败")
+        return None
+
+    true_votes = sum(1 for r in valid if r.get("contradicts"))
+    false_votes = len(valid) - true_votes
+    majority_contradicts = true_votes > false_votes
+
+    majority_results = [r for r in valid if r.get("contradicts") == majority_contradicts]
+    avg_confidence = sum(r.get("confidence", 0.5) for r in majority_results) / len(majority_results)
+    best_reason = max((r.get("reason", "") for r in majority_results), key=len)
+
+    action_votes = {}
+    for r in majority_results:
+        a = r.get("action", "keep_both")
+        action_votes[a] = action_votes.get(a, 0) + 1
+    majority_action = max(action_votes, key=action_votes.get)
+
+    logger.info(
+        "🗳️ parallel vote: %d/%d 矛盾票, avg_conf=%.2f, action=%s",
+        true_votes, len(valid), avg_confidence, majority_action,
+    )
+
+    return {
+        "contradicts": majority_contradicts,
+        "confidence": round(avg_confidence, 2),
+        "reason": best_reason,
+        "action": majority_action,
+        "votes": true_votes if majority_contradicts else false_votes,
+        "total": len(valid),
+    }
+
+
 def _extract_entity(text: str) -> str:
     """从变更语句中提取变更主体。"""
     m = re.search(r"(端口|路径|目录|版本|版本号|status|mode|状态|配置|地址|URL|端点)\s*(?:从|由|改成|改为|变为)", text, re.IGNORECASE)
@@ -384,11 +446,11 @@ def _text_matches_old_pattern(text: str, old_re: str) -> bool:
     return bool(re.search(old_re, text, re.IGNORECASE))
 
 
-def detect_and_resolve(memory, new_text: str, filters: dict = None, auto_archive_threshold: float = 0.8) -> Optional[dict]:
+def detect_and_resolve(memory, new_text: str, filters: dict = None, auto_archive_threshold: float = 0.8, pre_results: list = None) -> Optional[dict]:
     """写入前矛盾检测入口。返回 None → 无矛盾。
 
     auto_archive_threshold: 置信度 ≥ 此值自动归档，< 此值标记待审。
-    优化：最大 LLM 调用 3 次，找到冲突即停止。
+    pre_results: 外部传入的搜索结果，避免重复搜索。
     """
     if not new_text or len(new_text) < 15:
         return None
@@ -398,22 +460,18 @@ def detect_and_resolve(memory, new_text: str, filters: dict = None, auto_archive
     if filters is None:
         filters = {"user_id": USER_ID, "agent_id": AGENT_ID}
 
-    try:
-        try:
-            raw = memory.search(new_text, filters=filters, top_k=20)
-        except TypeError:
-            raw = memory.search(new_text, filters=filters, limit=20)
-        results = raw.get("results", raw) if isinstance(raw, dict) else raw
-        if not isinstance(results, list):
-            return None
-    except Exception as e:
-        logger.debug("矛盾检测搜索失败: %s", e)
+    # 复用外部搜索结果，不再自行搜索
+    if pre_results is None or len(pre_results) == 0:
+        logger.debug("矛盾消解无搜索结果，跳过")
         return None
+    results = pre_results
+    logger.debug("矛盾消解复用搜索结果: %d条", len(results))
 
     conflicts = []
     llm_call_count = 0
     from .conflict_resolver import _get_llm_config
-    MAX_LLM_CALLS = _get_llm_config().get("max_llm_calls", 3)  # 从配置读取
+    MAX_LLM_CALLS = _get_llm_config().get("max_llm_calls", 1)
+    NUM_VOTES = _get_llm_config().get("num_votes", 1)  # 从配置读取
 
     for r in results:
         if not isinstance(r, dict):
@@ -469,8 +527,8 @@ def detect_and_resolve(memory, new_text: str, filters: dict = None, auto_archive
                 break
 
             llm_call_count += 1
-            logger.info("调用 LLM 判断矛盾 (%d/%d): new=%s..., old=%s...", llm_call_count, MAX_LLM_CALLS, new_text[:30], old_text[:30])
-            llm_result = _llm_judge_contradiction(new_text, old_text, old_meta=meta, old_created_at=old_created_at)
+            logger.info("调用 LLM 并行投票 (%d/%d): new=%s..., old=%s...", llm_call_count, MAX_LLM_CALLS, new_text[:30], old_text[:30])
+            llm_result = _llm_judge_parallel(new_text, old_text, old_meta=meta, old_created_at=old_created_at, num_votes=NUM_VOTES)
             logger.info("LLM 返回结果: %s", llm_result)
             if llm_result and llm_result.get("contradicts"):
                 confidence = llm_result["confidence"]

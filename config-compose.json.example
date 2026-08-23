@@ -3,9 +3,9 @@
     "llm": {
       "provider": "openai",
       "config": {
-        "model": "Qwen/Qwen2.5-14B-Instruct",
+        "model": "mimo-v2.5-pro",
         "api_key": "YOUR_API_KEY",
-        "openai_base_url": "https://api.siliconflow.cn/v1"
+        "openai_base_url": "https://YOUR_MIMO_API_BASE_URL/v1"
       }
     },
     "embedder": {
@@ -72,10 +72,31 @@
     "llm": {
       "provider": "openai",
       "config": {
-        "model": "Qwen/Qwen3-8B",
+        "model": "mimo-v2.5-pro",
         "api_key": "YOUR_API_KEY",
-        "openai_base_url": "https://api.siliconflow.cn/v1"
+        "openai_base_url": "https://YOUR_MIMO_API_BASE_URL/v1"
       }
     }
+  },
+  "_comment_mem0_llm": "事实提取LLM配置：用于从对话中提取结构化记忆",
+  "_comment_conflict": "矛盾消解配置：新旧记忆矛盾检测+并行投票",
+  "_comment_consolidation": "记忆整合配置：碎片记忆合并",
+  "_comment_rerank": "重排序配置：搜索结果重排序",
+  "_comment_server": "服务配置：监听地址和端口",
+  "_comment_scoring": "打分配置：6维打分权重",
+  "conflict": {
+    "llm": {
+      "provider": "openai",
+      "config": {
+        "model": "mimo-v2.5-pro",
+        "api_key": "YOUR_API_KEY",
+        "openai_base_url": "https://YOUR_MIMO_API_BASE_URL/v1",
+        "max_tokens": 5000,
+        "max_llm_calls": 1,
+        "num_votes": 1
+      }
+    },
+    "auto_archive_threshold": 0.8,
+    "notify_threshold": 0.5
   }
 }

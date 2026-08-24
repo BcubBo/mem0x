@@ -188,7 +188,7 @@ app = FastAPI(
 # Helper functions
 # ═══════════════════════════════════════════════════
 
-def _update_usage_stats_sync(memory_instance, memory_ids: list):
+async def _update_usage_stats_sync(memory_instance, memory_ids: list):
     """批量更新被搜索记忆的使用维度字段（同步，在 executor 中执行）。"""
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc).isoformat()
@@ -196,11 +196,11 @@ def _update_usage_stats_sync(memory_instance, memory_ids: list):
         if not mid or mid.startswith("neo4j:"):
             continue
         try:
-            existing = memory_instance.get(mid)
+            existing = await memory_instance.get(mid)
             existing_metadata = existing.get("metadata", {}) if existing else {}
             current_count = existing_metadata.get("search_count", 0)
             new_count = int(current_count) + 1 if isinstance(current_count, (int, float)) else 1
-            memory_instance.update(
+            await memory_instance.update(
                 mid,
                 metadata={"search_count": new_count, "last_accessed_at": now},
             )
@@ -573,6 +573,7 @@ async def search_memory(req: SearchRequest, request: Request):
 
     # 从请求头或请求体获取 user_id/agent_id
     user_id = request.headers.get("X-User-ID") or req.user_id or os.environ.get("MEM0X_DEFAULT_USER", "default")
+    logger.info("🔍 search: req.user_id=%s, req.agent_id=%s", req.user_id, req.agent_id)
     agent_id = request.headers.get("X-Agent-ID") or req.agent_id or "hermes"
 
     # 构建 filters（mem0 2.0+ 必须有 user_id/agent_id/run_id 之一）
@@ -685,10 +686,7 @@ async def search_memory(req: SearchRequest, request: Request):
     # 收集需要更新的记忆 ID（只更新向量结果，不更新 neo4j 结果）
     vector_memory_ids = [r["id"] for r in results if r.get("id") and not r["id"].startswith("neo4j:")]
     if vector_memory_ids:
-        import asyncio
-        asyncio.get_event_loop().run_in_executor(
-            None, _update_usage_stats_sync, memory, vector_memory_ids
-        )
+        await _update_usage_stats_sync(memory, vector_memory_ids)
 
     elapsed_ms = int((time.time() - start) * 1000)
     logger.info("🔍 search: query=%s, results=%d, elapsed=%dms", req.query[:50], len(results), elapsed_ms)

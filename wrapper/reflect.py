@@ -7,6 +7,7 @@
 - 生成优化建议
 """
 from __future__ import annotations
+import asyncio
 
 import json
 import logging
@@ -62,7 +63,7 @@ def _ensure_db():
         _init_db()
 
 
-def analyze_system_health(memory, user_id: str = "bo", agent_id: str = "hermes") -> Dict:
+async def analyze_system_health(memory, user_id: str = "bo", agent_id: str = "hermes") -> Dict:
     """分析系统健康状态。"""
     health = {
         "total_memories": 0,
@@ -77,7 +78,7 @@ def analyze_system_health(memory, user_id: str = "bo", agent_id: str = "hermes")
             filters["agent_id"] = agent_id
 
         # 使用占位符查询获取记忆
-        results = memory.search(query="记忆", filters=filters, top_k=500)
+        results = await memory.search(query="记忆", filters=filters, top_k=500)
         items = results.get("results", []) if isinstance(results, dict) else []
         health["total_memories"] = len(items)
 
@@ -133,12 +134,12 @@ def analyze_system_health(memory, user_id: str = "bo", agent_id: str = "hermes")
     return health
 
 
-def run_reflect_cycle(memory, user_id: str = "bo", agent_id: str = "hermes") -> Dict:
+async def run_reflect_cycle(memory, user_id: str = "bo", agent_id: str = "hermes") -> Dict:
     """执行一轮反思，返回分析结果。"""
     result = {"status": "ok", "health": {}}
 
     try:
-        health = analyze_system_health(memory, user_id, agent_id)
+        health = await analyze_system_health(memory, user_id, agent_id)
         result["health"] = health
 
         # 记录到 SQLite
@@ -200,7 +201,7 @@ def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
         try:
             memory = memory_getter()
             if memory:
-                result = run_reflect_cycle(memory)
+                result = asyncio.run(run_reflect_cycle(memory))
                 # 过滤掉"系统运行正常"，只统计真正的问题
                 issues = result.get("health", {}).get("issues", [])
                 real_issues = [i for i in issues if i != "系统运行正常"]

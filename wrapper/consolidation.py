@@ -9,6 +9,7 @@
 改动：wrapper/consolidation.py（替换旧版）
 """
 from __future__ import annotations
+import asyncio
 
 import logging
 import math
@@ -385,7 +386,7 @@ def _merge_with_llm(
 # 核心合并流程
 # ═══════════════════════════════════════════════════════
 
-def find_merge_groups(
+async def find_merge_groups(
     memory,
     user_id: str = "bo",
     agent_id: str = "hermes",
@@ -409,7 +410,7 @@ def find_merge_groups(
         filters["agent_id"] = agent_id
 
     try:
-        result = memory.get_all(filters=filters, top_k=top_k)
+        result = await memory.get_all(filters=filters, top_k=top_k)
         items = result.get("results", []) if isinstance(result, dict) else []
     except Exception as e:
         logger.error("get_all 失败: %s", e)
@@ -489,7 +490,7 @@ def find_merge_groups(
     return groups
 
 
-def run_consolidation_cycle(
+async def run_consolidation_cycle(
     memory,
     neo4j_hook=None,
     user_id: str = "bo",
@@ -509,7 +510,7 @@ def run_consolidation_cycle(
 
     merged_count = 0
     try:
-        groups = find_merge_groups(memory, user_id, agent_id)
+        groups = await find_merge_groups(memory, user_id, agent_id)
 
         for group in groups[:MAX_MERGES_PER_CYCLE]:
             source_ids = [item.get("id", "") for item in group]
@@ -608,7 +609,7 @@ def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
         try:
             memory = memory_getter()
             if memory:
-                merged = run_consolidation_cycle(memory, neo4j_hook=neo4j_hook)
+                merged = asyncio.run(run_consolidation_cycle(memory, neo4j_hook=neo4j_hook))
                 if merged > 0:
                     logger.info("本轮整合 %d 条记忆", merged)
         except Exception as e:

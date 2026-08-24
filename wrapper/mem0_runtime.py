@@ -93,7 +93,7 @@ def reset_config_cache():
 
 # ── mem0 单例 ─────────────────────────────────────────────────
 def get_memory(config: Optional[Dict] = None):
-    """获取 mem0 Memory 单例（懒加载 + 双重锁）。"""
+    """获取 mem0 AsyncMemory 单例（懒加载 + 双重锁）。"""
     global _memory_instance
     if _memory_instance is not None:
         return _memory_instance
@@ -106,10 +106,10 @@ def get_memory(config: Optional[Dict] = None):
             config = load_config()
 
         mem0_cfg = config.get("mem0", {})
-        from mem0 import Memory
+        from mem0 import AsyncMemory
 
-        _memory_instance = Memory.from_config(mem0_cfg)
-        logger.info("mem0 Memory 单例初始化完成")
+        _memory_instance = AsyncMemory.from_config(mem0_cfg)
+        logger.info("mem0 AsyncMemory 单例初始化完成")
         return _memory_instance
 
 

@@ -7,6 +7,7 @@
 - 生成记忆摘要
 """
 from __future__ import annotations
+import asyncio
 
 import logging
 import threading
@@ -23,7 +24,7 @@ _running = False
 _thread: Optional[threading.Thread] = None
 
 
-def analyze_memory_quality(memory, user_id: str = "bo", agent_id: str = "hermes") -> Dict:
+async def analyze_memory_quality(memory, user_id: str = "bo", agent_id: str = "hermes") -> Dict:
     """分析记忆质量，返回统计信息。
 
     基于 FSRS（Free Spaced Repetition Scheduler）理论 + 文本特征：
@@ -102,7 +103,7 @@ def analyze_memory_quality(memory, user_id: str = "bo", agent_id: str = "hermes"
             filters["agent_id"] = agent_id
 
         # 使用 get_all 获取所有记忆（不依赖 search score）
-        results = memory.get_all(filters=filters, top_k=500)
+        results = await memory.get_all(filters=filters, top_k=500)
         items = results.get("results", []) if isinstance(results, dict) else []
 
         stats["total"] = len(items)
@@ -171,14 +172,14 @@ def analyze_memory_quality(memory, user_id: str = "bo", agent_id: str = "hermes"
     return stats
 
 
-def run_evolve_cycle(memory, neo4j_hook=None, user_id: str = "bo",
+async def run_evolve_cycle(memory, neo4j_hook=None, user_id: str = "bo",
                     agent_id: str = "hermes") -> Dict:
     """执行一轮自进化，返回优化结果。"""
     result = {"analyzed": 0, "optimized": 0, "pruned": 0}
 
     try:
         # 1. 分析质量
-        stats = analyze_memory_quality(memory, user_id, agent_id)
+        stats = await analyze_memory_quality(memory, user_id, agent_id)
         result["analyzed"] = stats["total"]
         logger.info("记忆质量分析: 总%d, 高质%d, 中质%d, 低质%d, 过期%d",
                     stats["total"], stats["high_quality"],
@@ -193,7 +194,7 @@ def run_evolve_cycle(memory, neo4j_hook=None, user_id: str = "bo",
                 filters["agent_id"] = agent_id
 
             # 使用 get_all 获取所有记忆
-            results = memory.get_all(filters=filters, top_k=500)
+            results = await memory.get_all(filters=filters, top_k=500)
             items = results.get("results", []) if isinstance(results, dict) else []
 
             # FSRS 参数
@@ -296,7 +297,7 @@ def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
         try:
             memory = memory_getter()
             if memory:
-                result = run_evolve_cycle(memory, neo4j_hook=neo4j_hook)
+                result = asyncio.run(run_evolve_cycle(memory, neo4j_hook=neo4j_hook))
                 if result["pruned"] > 0:
                     logger.info("本轮自进化: 清理 %d 条", result["pruned"])
         except Exception as e:

@@ -52,7 +52,7 @@ def jaccard_sim(a: str, b: str) -> float:
     return len(ta & tb) / len(ta | tb)
 
 
-def find_duplicate(backend, new_content: str, filters: dict, *, threshold: float = 0.85,
+async def find_duplicate(backend, new_content: str, filters: dict, *, threshold: float = 0.85,
                    _pre_results: list = None) -> Optional[Tuple[str, str, float]]:
     """搜索是否有重复记忆。返回 (memory_id, existing_text, similarity) 或 None。
 
@@ -64,7 +64,7 @@ def find_duplicate(backend, new_content: str, filters: dict, *, threshold: float
         if _pre_results is not None:
             results = _pre_results
         else:
-            results = backend.search(new_content, filters=filters, top_k=5)
+            results = await backend.search(new_content, filters=filters, top_k=5)
         if not results:
             return None
         for r in results:

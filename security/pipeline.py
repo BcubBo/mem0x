@@ -98,7 +98,7 @@ def redact_pii(text: str) -> str:
     return result
 
 
-def safe_add(
+async def safe_add(
     memory,
     content: str,
     filters: dict = None,
@@ -147,22 +147,22 @@ def safe_add(
 
     shared_results = []
     try:
-        raw = memory.search(content, filters=filters, top_k=5)
+        raw = await memory.search(content, filters=filters, top_k=5)
         shared_results = raw.get("results", []) if isinstance(raw, dict) else (raw if isinstance(raw, list) else [])
     except Exception:
         pass
 
     # 3. 矛盾消解（规则驱动，零 LLM 成本，优先于 dedup）
-    conflict_result = detect_and_resolve(memory, content, filters=filters, pre_results=shared_results)
+    conflict_result = await detect_and_resolve(memory, content, filters=filters, pre_results=shared_results)
     if conflict_result:
         logger.info("⚔️ pipeline.conflict: resolved=%d", conflict_result.get("resolved", 0))
         # 矛盾消解后，用 Jaccard 快速去重（不调 LLM，省~30秒）
-        dup = find_duplicate(memory, content, filters, _pre_results=shared_results)
+        dup = await find_duplicate(memory, content, filters, _pre_results=shared_results)
         if dup:
             mem_id, old_text, sim = dup
             logger.info("🔄 pipeline.duplicate_after_conflict: memory_id=%s, similarity=%.2f", mem_id, sim)
             try:
-                memory.update(mem_id, content)
+                await memory.update(mem_id, content)
             except Exception as e:
                 logger.warning("dedup update 失败: %s", e)
                 return {"action": "error", "reason": f"dedup update failed: {e}"}
@@ -177,7 +177,7 @@ def safe_add(
             }
             if expiration_date is not None:
                 add_kwargs["expiration_date"] = expiration_date
-            result = memory.add(
+            result = await memory.add(
                 [{"role": "user", "content": content}],
                 **add_kwargs,
             )
@@ -193,12 +193,12 @@ def safe_add(
         }
 
     # 4. Jaccard 去重（用共享结果，在 conflict 之后）
-    dup = find_duplicate(memory, content, filters, _pre_results=shared_results)
+    dup = await find_duplicate(memory, content, filters, _pre_results=shared_results)
     if dup:
         mem_id, old_text, sim = dup
         logger.info("🔄 pipeline.duplicate: memory_id=%s, similarity=%.2f", mem_id, sim)
         try:
-            memory.update(mem_id, content)
+            await memory.update(mem_id, content)
         except Exception as e:
             logger.warning("dedup update 失败: %s", e)
             return {"action": "error", "reason": f"dedup update failed: {e}"}
@@ -214,7 +214,7 @@ def safe_add(
         }
         if expiration_date is not None:
             add_kwargs["expiration_date"] = expiration_date
-        result = memory.add(
+        result = await memory.add(
             [{"role": "user", "content": content}],
             **add_kwargs,
         )

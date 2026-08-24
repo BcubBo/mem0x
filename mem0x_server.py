@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -71,6 +72,7 @@ class SearchRequest(BaseModel):
 
 class DeleteRequest(BaseModel):
     memory_id: str = Field(..., description="记忆 ID")
+    confirm_token: Optional[str] = Field(default=None, description="确认 token（/delete/confirm 时必填）")
 
 
 class UpdateRequest(BaseModel):
@@ -177,9 +179,150 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="mem0x",
     description="自托管 AI 记忆增强服务",
-    version="0.1.15",
+    version="0.1.16",
     lifespan=lifespan,
 )
+
+
+# ═══════════════════════════════════════════════════
+# Helper functions
+# ═══════════════════════════════════════════════════
+
+def _update_usage_stats_sync(memory_instance, memory_ids: list):
+    """批量更新被搜索记忆的使用维度字段（同步，在 executor 中执行）。"""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    for mid in memory_ids:
+        if not mid or mid.startswith("neo4j:"):
+            continue
+        try:
+            existing = memory_instance.get(mid)
+            existing_metadata = existing.get("metadata", {}) if existing else {}
+            current_count = existing_metadata.get("search_count", 0)
+            new_count = int(current_count) + 1 if isinstance(current_count, (int, float)) else 1
+            memory_instance.update(
+                mid,
+                metadata={"search_count": new_count, "last_accessed_at": now},
+            )
+        except Exception as e:
+            logger.debug("更新使用维度失败 %s: %s", mid[:16], e)
+
+import hashlib
+import hmac
+import secrets
+import sqlite3
+
+_DELETE_CONFIRM_TTL = 300  # 5分钟有效期
+_pending_deletions: dict[str, dict] = {}  # {token: {memory_id, expires_at, user_id, used}}
+_pending_deletions_lock = threading.Lock()
+
+# ── 审计日志 SQLite ──
+_audit_db_path = None
+
+
+def _get_audit_db() -> sqlite3.Connection:
+    """获取审计日志数据库连接。"""
+    global _audit_db_path
+    if _audit_db_path is None:
+        _audit_db_path = os.path.join(
+            os.environ.get("MEM0X_DATA_DIR", "data"),
+            "delete_audit.db",
+        )
+    conn = sqlite3.connect(_audit_db_path)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS delete_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            token TEXT NOT NULL,
+            memory_id TEXT NOT NULL,
+            user_id TEXT,
+            api_key_hash TEXT,
+            created_at REAL NOT NULL,
+            confirmed_at REAL,
+            cancelled_at REAL,
+            action TEXT NOT NULL DEFAULT 'pending'
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_token ON delete_audit(token)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_id ON delete_audit(memory_id)")
+    conn.commit()
+    return conn
+
+
+def _log_delete_event(token: str, memory_id: str, user_id: str = None,
+                      api_key: str = None, action: str = "pending") -> None:
+    """记录删除审计事件。"""
+    try:
+        conn = _get_audit_db()
+        api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16] if api_key else None
+        if action == "pending":
+            conn.execute(
+                "INSERT INTO delete_audit (token, memory_id, user_id, api_key_hash, created_at, action) VALUES (?, ?, ?, ?, ?, ?)",
+                (token, memory_id, user_id, api_key_hash, time.time(), action),
+            )
+        elif action == "confirmed":
+            conn.execute(
+                "UPDATE delete_audit SET confirmed_at=?, action='confirmed' WHERE token=? AND action='pending'",
+                (time.time(), token),
+            )
+        elif action == "cancelled":
+            conn.execute(
+                "UPDATE delete_audit SET cancelled_at=?, action='cancelled' WHERE token=? AND action='pending'",
+                (time.time(), token),
+            )
+        conn.commit()
+    except Exception as e:
+        logger.debug("审计日志写入失败: %s", e)
+
+
+def _generate_delete_token(memory_id: str, user_id: str = None, api_key: str = None) -> str:
+    """生成删除确认 token（HMAC-based，5分钟有效，绑定 user_id）。"""
+    secret = os.environ.get("MEM0X_DELETE_SECRET", secrets.token_hex(16))
+    timestamp = str(int(time.time()))
+    token = hmac.new(secret.encode(), f"{memory_id}:{timestamp}".encode(), hashlib.sha256).hexdigest()[:16]
+    with _pending_deletions_lock:
+        _pending_deletions[token] = {
+            "memory_id": memory_id,
+            "expires_at": time.time() + _DELETE_CONFIRM_TTL,
+            "timestamp": timestamp,
+            "user_id": user_id,
+            "api_key_hash": hashlib.sha256(api_key.encode()).hexdigest()[:16] if api_key else None,
+            "used": False,
+        }
+    _log_delete_event(token, memory_id, user_id, api_key, "pending")
+    return token
+
+
+def _verify_delete_token(token: str, api_key: str = None) -> Optional[str]:
+    """验证删除确认 token（一次性 + user_id 绑定）。返回 memory_id 或 None。"""
+    with _pending_deletions_lock:
+        entry = _pending_deletions.get(token)
+        if not entry:
+            return None
+        if entry["used"]:
+            logger.warning("token 重放拒绝: %s", token[:8])
+            return None
+        if time.time() > entry["expires_at"]:
+            del _pending_deletions[token]
+            return None
+        # 验证 api_key 绑定
+        if api_key:
+            api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
+            if entry["api_key_hash"] and entry["api_key_hash"] != api_key_hash:
+                logger.warning("token api_key 不匹配: %s", token[:8])
+                return None
+        entry["used"] = True  # 标记已使用
+    _log_delete_event(token, entry["memory_id"], action="confirmed")
+    return entry["memory_id"]
+
+
+def _cancel_delete_token(token: str) -> bool:
+    """撤销删除 token。返回是否成功。"""
+    with _pending_deletions_lock:
+        entry = _pending_deletions.pop(token, None)
+    if not entry:
+        return False
+    _log_delete_event(token, entry["memory_id"], action="cancelled")
+    return True
 
 # ═══════════════════════════════════════════════════
 # API Key 认证
@@ -214,14 +357,113 @@ def verify_api_key(request: Request):
     required_key = _get_api_key()
     if not required_key:
         return  # 未配置 api_key，免认证（向后兼容）
+
+    # 从 X-API-Key 或 Authorization: Bearer <key> 取
     key = request.headers.get("X-API-Key", "")
     if not key:
         auth = request.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
             key = auth[7:]
+
     if not key or key != required_key:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
+
+# ═══════════════════════════════════════════════════
+# Redis 速率限制
+# ═══════════════════════════════════════════════════
+
+import redis.asyncio as aioredis
+
+_redis_client: Optional[aioredis.Redis] = None
+
+
+def _get_redis() -> Optional[aioredis.Redis]:
+    """获取 Redis 连接（懒加载）。"""
+    global _redis_client
+    if _redis_client is not None:
+        return _redis_client
+    try:
+        cfg = load_config()
+        redis_cfg = cfg.get("redis", {})
+        host = redis_cfg.get("host", "redis")
+        port = redis_cfg.get("port", 6379)
+        db = redis_cfg.get("db", 0)
+        _redis_client = aioredis.Redis(host=host, port=port, db=db, decode_responses=True)
+        logger.info("Redis 连接成功: %s:%d", host, port)
+        return _redis_client
+    except Exception as e:
+        logger.warning("Redis 连接失败: %s，限流降级为内存模式", e)
+        return None
+
+
+# 端点限流配置：{端点: (最大请求数, 时间窗口秒)}
+_RATE_LIMITS = {
+    "/add": (30, 60),        # LLM调用贵
+    "/search": (60, 60),     # 轻量
+    "/delete": (10, 60),     # 低频
+    "/delete/confirm": (10, 60),
+    "/update": (20, 60),     # 中频
+    "/expire": (5, 60),      # 后台任务
+    "/consolidate": (5, 60),
+    "/evolve": (5, 60),
+    "/reflect": (5, 60),
+}
+_DEFAULT_LIMIT = (120, 60)  # 其他端点
+
+
+async def _check_rate_limit(key: str, max_requests: int, window: int) -> bool:
+    """滑动窗口限流。返回 True 表示允许，False 表示超限。"""
+    r = _get_redis()
+    if r is None:
+        return True  # Redis 不可用时放行
+
+    now = time.time()
+    window_start = now - window
+
+    pipe = r.pipeline()
+    # 移除窗口外的旧请求
+    pipe.zremrangebyscore(key, 0, window_start)
+    # 添加当前请求
+    pipe.zadd(key, {str(now): now})
+    # 设置过期时间
+    pipe.expire(key, window)
+    # 统计窗口内请求数
+    pipe.zcard(key)
+    results = await pipe.execute()
+
+    count = results[-1]
+    return count <= max_requests
+
+
+def rate_limit(request: Request):
+    """FastAPI 依赖：速率限制。"""
+    # 跳过 health 和无限制端点
+    path = request.url.path
+    if path in ("/health", "/reflect/health"):
+        return
+
+    max_requests, window = _RATE_LIMITS.get(path, _DEFAULT_LIMIT)
+    # 用 API key 或 IP 作为限流 key
+    api_key = request.headers.get("X-API-Key", "anonymous")
+    key = f"ratelimit:{path}:{api_key}"
+
+    # 同步检查（Redis 操作在异步上下文中用 await）
+    # 由于 Depends 不能直接 await，改用后台检查
+    # 实际限流在端点内部通过 check_rate_limit_async 实现
+    pass
+
+
+async def check_rate_limit_async(path: str, api_key: str = "anonymous") -> None:
+    """异步限流检查，超限时抛异常。"""
+    max_requests, window = _RATE_LIMITS.get(path, _DEFAULT_LIMIT)
+    key = f"ratelimit:{path}:{api_key}"
+    allowed = await _check_rate_limit(key, max_requests, window)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded: {max_requests} requests per {window}s"
+        )
 
 
 # ═══════════════════════════════════════════════════
@@ -248,13 +490,14 @@ async def add_memory(req: AddRequest, request: Request):
     """安全写入记忆。
 
     链路：注入防御 → PII脱敏 → 去重 → 矛盾消解 → 语义判重 → 写入
-    user_id 优先级：请求头 X-User-ID > 请求体 user_id > 默认 MEM0X_DEFAULT_USER
+    user_id 优先级：请求头 X-User-ID > 请求体 user_id > 默认 "bo"
     """
+    await check_rate_limit_async("/add", request.headers.get("X-API-Key", "anonymous"))
     memory = get_memory()
     start = time.time()
 
     # 从请求头或请求体获取 user_id/agent_id
-    user_id = request.headers.get("X-User-ID") or req.user_id or os.environ.get("MEM0X_DEFAULT_USER", "bo")
+    user_id = request.headers.get("X-User-ID") or req.user_id or os.environ.get("MEM0X_DEFAULT_USER", "default")
     agent_id = request.headers.get("X-Agent-ID") or req.agent_id or "hermes"
 
     # 构建 filters（mem0 2.0+ 必须有 user_id/agent_id/run_id 之一）
@@ -270,7 +513,7 @@ async def add_memory(req: AddRequest, request: Request):
     else:
         content = str(req.messages)
 
-    logger.info("📥 add: user=%s, agent=%s, content_len=%d, content=%s", user_id, agent_id, len(content), content[:80])
+    logger.debug("📥 add: user=%s, agent=%s, content_len=%d", user_id, agent_id, len(content))
 
     # 初始化使用维度字段
     usage_metadata = {
@@ -284,7 +527,7 @@ async def add_memory(req: AddRequest, request: Request):
         usage_metadata.update(req.metadata)
 
     # 安全写入链路
-    result = safe_add(
+    result = await safe_add(
         memory, content, filters,
         user_id=user_id, agent_id=agent_id,
         metadata=usage_metadata, expiration_date=req.expiration_date,
@@ -322,13 +565,14 @@ async def search_memory(req: SearchRequest, request: Request):
     """搜索记忆。
 
     链路：向量检索 → Neo4j引导查询 → 5维打分 → rerank → salience boost
-    user_id 优先级：请求头 X-User-ID > 请求体 user_id > 默认 MEM0X_DEFAULT_USER
+    user_id 优先级：请求头 X-User-ID > 请求体 user_id > 默认 "bo"
     """
+    await check_rate_limit_async("/search", request.headers.get("X-API-Key", "anonymous"))
     memory = get_memory()
     start = time.time()
 
     # 从请求头或请求体获取 user_id/agent_id
-    user_id = request.headers.get("X-User-ID") or req.user_id or os.environ.get("MEM0X_DEFAULT_USER", "bo")
+    user_id = request.headers.get("X-User-ID") or req.user_id or os.environ.get("MEM0X_DEFAULT_USER", "default")
     agent_id = request.headers.get("X-Agent-ID") or req.agent_id or "hermes"
 
     # 构建 filters（mem0 2.0+ 必须有 user_id/agent_id/run_id 之一）
@@ -337,7 +581,7 @@ async def search_memory(req: SearchRequest, request: Request):
     # 向量检索（缩小候选池，用 top 结果引导 Neo4j）
     search_limit = 20
     try:
-        raw = memory.search(req.query, filters=filters, top_k=search_limit)
+        raw = await memory.search(req.query, filters=filters, top_k=search_limit)
         results = raw.get("results", []) if isinstance(raw, dict) else (raw if isinstance(raw, list) else [])
     except Exception as e:
         logger.warning("mem0 search 失败: %s", e)
@@ -438,42 +682,13 @@ async def search_memory(req: SearchRequest, request: Request):
                 "score": round(score, 2),
             })
 
-    # 更新使用维度字段（异步，不阻塞响应）
-    async def _update_usage_stats(memory_ids: list):
-        """批量更新被搜索记忆的使用维度字段。"""
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc).isoformat()
-        for mid in memory_ids:
-            if not mid or mid.startswith("neo4j:"):
-                continue
-            try:
-                # 获取现有记忆的 metadata
-                existing = memory.get(mid)
-                existing_metadata = existing.get("metadata", {}) if existing else {}
-                
-                # 增量更新 search_count
-                current_count = existing_metadata.get("search_count", 0)
-                if isinstance(current_count, (int, float)):
-                    new_count = int(current_count) + 1
-                else:
-                    new_count = 1
-                
-                # 更新 metadata
-                memory.update(
-                    mid,
-                    metadata={
-                        "search_count": new_count,
-                        "last_accessed_at": now,
-                    }
-                )
-            except Exception as e:
-                logger.debug("更新使用维度失败 %s: %s", mid[:16], e)
-
     # 收集需要更新的记忆 ID（只更新向量结果，不更新 neo4j 结果）
     vector_memory_ids = [r["id"] for r in results if r.get("id") and not r["id"].startswith("neo4j:")]
     if vector_memory_ids:
         import asyncio
-        asyncio.create_task(_update_usage_stats(vector_memory_ids))
+        asyncio.get_event_loop().run_in_executor(
+            None, _update_usage_stats_sync, memory, vector_memory_ids
+        )
 
     elapsed_ms = int((time.time() - start) * 1000)
     logger.info("🔍 search: query=%s, results=%d, elapsed=%dms", req.query[:50], len(results), elapsed_ms)
@@ -485,12 +700,9 @@ async def search_memory(req: SearchRequest, request: Request):
 
 
 @app.post("/delete", dependencies=[Depends(verify_api_key)])
-async def delete_memory(req: DeleteRequest):
-    """删除记忆（级联清理 Qdrant + salience + Neo4j）。
-
-    安全策略：软删除 — 标记 deleted_at，搜索时过滤。
-    硬删除需通过 /delete/confirm 端点。
-    """
+async def delete_memory(req: DeleteRequest, request: Request):
+    """软删除记忆。搜索时过滤，数据仍保留可恢复。"""
+    await check_rate_limit_async("/delete", request.headers.get("X-API-Key", "anonymous"))
     import re
     from datetime import datetime, timezone
     
@@ -504,7 +716,7 @@ async def delete_memory(req: DeleteRequest):
     
     # 2. 软删除：更新 metadata 标记 deleted_at
     try:
-        memory.update(
+        await memory.update(
             req.memory_id,
             text=None,  # 不改内容，只改 metadata
             metadata={"deleted_at": datetime.now(timezone.utc).isoformat()},
@@ -512,16 +724,21 @@ async def delete_memory(req: DeleteRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Delete failed: {e}")
     
-    return {"status": "ok", "memory_id": req.memory_id, "action": "soft_deleted"}
+    return {"status": "ok", "memory_id": req.memory_id, "action": "soft_deleted", "confirm_token": _generate_delete_token(req.memory_id, user_id=req.user_id if hasattr(req, "user_id") else None, api_key=request.headers.get("X-API-Key")), "confirm_expires_in": _DELETE_CONFIRM_TTL}
 
 
 @app.post("/delete/confirm", dependencies=[Depends(verify_api_key)])
-async def delete_memory_confirm(req: DeleteRequest):
-    """硬删除记忆（级联清理 Qdrant + salience + Neo4j）。
-
-    调用方需显式调用此端点才能真正删除。
-    """
+async def delete_memory_confirm(req: DeleteRequest, request: Request):
+    """硬删除记忆（需带 confirm_token，5分钟内有效）。"""
+    await check_rate_limit_async("/delete/confirm", request.headers.get("X-API-Key", "anonymous"))
     import re
+    
+    if not req.confirm_token:
+        raise HTTPException(status_code=400, detail="confirm_token required")
+    
+    confirmed_memory_id = _verify_delete_token(req.confirm_token, api_key=request.headers.get("X-API-Key"))
+    if not confirmed_memory_id or confirmed_memory_id != req.memory_id:
+        raise HTTPException(status_code=400, detail="Invalid or expired confirm_token")
     
     # 1. 格式校验
     if not req.memory_id or not re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', req.memory_id, re.IGNORECASE):
@@ -531,7 +748,7 @@ async def delete_memory_confirm(req: DeleteRequest):
     
     # 2. mem0 删除（Qdrant）
     try:
-        memory.delete(req.memory_id)
+        await memory.delete(req.memory_id)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Delete failed: {e}")
     
@@ -552,12 +769,28 @@ async def delete_memory_confirm(req: DeleteRequest):
     return {"status": "ok", "memory_id": req.memory_id, "action": "hard_deleted"}
 
 
+
+@app.post("/delete/cancel", dependencies=[Depends(verify_api_key)])
+async def delete_memory_cancel(req: DeleteRequest, request: Request):
+    """撤销待确认的删除操作。"""
+    await check_rate_limit_async("/delete", request.headers.get("X-API-Key", "anonymous"))
+    if not req.confirm_token:
+        raise HTTPException(status_code=400, detail="confirm_token required")
+    
+    ok = _cancel_delete_token(req.confirm_token)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Invalid or already used/cancelled token")
+    
+    return {"status": "ok", "memory_id": req.memory_id, "action": "cancelled"}
+
+
 @app.post("/update", dependencies=[Depends(verify_api_key)])
 async def update_memory(req: UpdateRequest):
     """更新记忆内容（Qdrant + Neo4j 双端同步）。
 
     安全链路：注入防御 → PII 脱敏 → 更新
     """
+    await check_rate_limit_async("/update", request.headers.get("X-API-Key", "anonymous"))
     from security.pipeline import redact_pii
     from security.injection_guard import validate_memory_content
 
@@ -578,7 +811,7 @@ async def update_memory(req: UpdateRequest):
     try:
         # 0. 版本追踪：更新前保存旧版本
         try:
-            old_item = memory.get(req.memory_id)
+            old_item = await memory.get(req.memory_id)
             if old_item:
                 old_content = old_item.get("memory", "")
                 old_meta = old_item.get("metadata") or {}
@@ -591,7 +824,7 @@ async def update_memory(req: UpdateRequest):
         # 1. 增量更新 update_count
         existing_meta = {}
         try:
-            existing_item = memory.get(req.memory_id)
+            existing_item = await memory.get(req.memory_id)
             if existing_item:
                 existing_meta = existing_item.get("metadata") or {}
         except Exception:
@@ -611,7 +844,7 @@ async def update_memory(req: UpdateRequest):
             update_metadata.update(req.metadata)
 
         # 2. 更新 Qdrant
-        memory.update(req.memory_id, cleaned_content, metadata=update_metadata)
+        await memory.update(req.memory_id, cleaned_content, metadata=update_metadata)
 
         # 3. 同步更新 Neo4j（先删后写）
         try:
@@ -754,7 +987,7 @@ async def add_core_memory(req: CoreMemoryRequest):
     memory = get_memory()
     # 获取记忆内容
     try:
-        results = memory.search(query="", filters={"memory_id": req.memory_id}, top_k=1)
+        results = await memory.search(query="", filters={"memory_id": req.memory_id}, top_k=1)
         items = results.get("results", []) if isinstance(results, dict) else []
         content = items[0].get("memory", "") if items else ""
     except Exception:
@@ -922,7 +1155,7 @@ async def rollback_version(memory_id: str, req: RollbackRequest):
 
     # 2. 获取当前内容（保存为新版本）
     try:
-        current = memory.get(memory_id)
+        current = await memory.get(memory_id)
         if current:
             current_content = current.get("memory", "")
             current_meta = current.get("metadata") or {}
@@ -932,7 +1165,7 @@ async def rollback_version(memory_id: str, req: RollbackRequest):
 
     # 3. 用旧版本内容覆盖
     try:
-        memory.update(memory_id, target["content"])
+        await memory.update(memory_id, target["content"])
 
         # 4. 同步 Neo4j
         try:

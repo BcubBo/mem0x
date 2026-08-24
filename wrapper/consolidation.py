@@ -534,7 +534,7 @@ async def run_consolidation_cycle(
             # 写入合并结果
             # 注意：infer=False 时 messages 必须是 [{"role":"user","content":"..."}] 格式
             try:
-                new_result = memory.add(
+                new_result = await memory.add(
                     messages=[{"role": "user", "content": merged_text}],
                     user_id=user_id,
                     agent_id=agent_id,
@@ -561,7 +561,7 @@ async def run_consolidation_cycle(
                 if not old_id:
                     continue
                 try:
-                    memory.update(
+                    await memory.update(
                         old_id,
                         metadata={"archived": True, "merged_into": new_id},
                     )

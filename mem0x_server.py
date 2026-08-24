@@ -573,8 +573,11 @@ async def search_memory(req: SearchRequest, request: Request):
 
     # 从请求头或请求体获取 user_id/agent_id
     user_id = request.headers.get("X-User-ID") or req.user_id or os.environ.get("MEM0X_DEFAULT_USER", "default")
-    logger.info("🔍 search: req.user_id=%s, req.agent_id=%s", req.user_id, req.agent_id)
     agent_id = request.headers.get("X-Agent-ID") or req.agent_id or "hermes"
+    logger.info("🔍 search: user_id=%s, agent_id=%s, req.user_id=%s, req.agent_id=%s", user_id, agent_id, req.user_id, req.agent_id)
+    # 打印请求体原文（调试用）
+    import json as _json
+    logger.info("🔍 search: body=%s", _json.dumps({"query": req.query, "user_id": req.user_id, "agent_id": req.agent_id}, ensure_ascii=False))
 
     # 构建 filters（mem0 2.0+ 必须有 user_id/agent_id/run_id 之一）
     filters = {"user_id": user_id, "agent_id": agent_id}
@@ -783,7 +786,7 @@ async def delete_memory_cancel(req: DeleteRequest, request: Request):
 
 
 @app.post("/update", dependencies=[Depends(verify_api_key)])
-async def update_memory(req: UpdateRequest):
+async def update_memory(req: UpdateRequest, request: Request):
     """更新记忆内容（Qdrant + Neo4j 双端同步）。
 
     安全链路：注入防御 → PII 脱敏 → 更新

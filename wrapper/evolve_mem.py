@@ -259,7 +259,7 @@ async def run_evolve_cycle(memory, neo4j_hook=None, user_id: str = "bo",
                 prune_threshold = max(THRESHOLD_LOW - 0.1, 0.2)
                 if Q < prune_threshold and not is_core_memory(mem_id):
                     try:
-                        memory.delete(mem_id)
+                        await memory.delete(mem_id)
                         result["pruned"] += 1
 
                         if neo4j_hook and neo4j_hook.enabled:

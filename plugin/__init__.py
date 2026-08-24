@@ -25,16 +25,20 @@ logger = logging.getLogger("hermes_plugins.mem0x")
 class _Client:
     """轻量 HTTP 客户端（urllib，零依赖）。"""
 
-    def __init__(self, base_url: str):
+    def __init__(self, base_url: str, api_key: str = ""):
         self.base = base_url.rstrip("/")
+        self.api_key = api_key
 
     def request(self, method: str, path: str, body: Any = None, timeout: float = 6.0) -> Any:
         data = json.dumps(body).encode() if body else None
+        headers = {"Content-Type": "application/json"} if data else {}
+        if self.api_key:
+            headers["X-API-Key"] = self.api_key
         req = urllib.request.Request(
             f"{self.base}{path}",
             data=data,
             method=method,
-            headers={"Content-Type": "application/json"} if data else {},
+            headers=headers,
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode())
@@ -75,7 +79,8 @@ def _get_client() -> _Client:
     if _client is None:
         cfg = _load_config()
         url = cfg.get("service_url", "http://127.0.0.1:28768")
-        _client = _Client(url)
+        api_key = cfg.get("auth", {}).get("api_key", "")
+        _client = _Client(url, api_key=api_key)
     return _client
 
 
@@ -120,7 +125,10 @@ def _get_sender_metadata() -> dict:
 # MemoryProvider 接口实现
 # ═══════════════════════════════════════════════════
 
-class Mem0RemoteProvider:
+from agent.memory_provider import MemoryProvider
+
+
+class Mem0RemoteProvider(MemoryProvider):
     """mem0x MemoryProvider（HTTP 远程调用）。"""
 
     name = "mem0x"
@@ -288,6 +296,8 @@ class Mem0RemoteProvider:
                 "limit": top_k,
                 "rerank": True,
                 "include_archived": include_archived,
+                "user_id": _get_user_id(),
+                "agent_id": _get_agent_id(),
             }, timeout=_get_timeout("search"))
 
         elif tool_name == "mem0_delete":

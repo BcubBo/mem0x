@@ -7,3 +7,4 @@ qdrant-client==1.19.0
 requests>=2.31.0
 fastembed
 spacy
+redis>=5.0.0

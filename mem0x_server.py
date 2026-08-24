@@ -25,7 +25,7 @@ PROJECT_ROOT = str(Path(__file__).resolve().parent)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends
 from pydantic import BaseModel, Field
 
 # ── 延迟导入（配置加载后才初始化） ──
@@ -181,6 +181,48 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# ═══════════════════════════════════════════════════
+# API Key 认证
+# ═══════════════════════════════════════════════════
+
+import hashlib
+import secrets
+
+_api_key_cache: Optional[str] = None
+_api_key_cache_at: float = 0
+
+
+def _get_api_key() -> Optional[str]:
+    """从 config.json 读取 api_key（缓存5分钟）。"""
+    global _api_key_cache, _api_key_cache_at
+    if _api_key_cache is not None and time.time() - _api_key_cache_at < 300:
+        return _api_key_cache
+    try:
+        cfg = load_config()
+        key = cfg.get("server", {}).get("api_key", "")
+        if key:
+            _api_key_cache = key
+            _api_key_cache_at = time.time()
+            return key
+    except Exception:
+        pass
+    return None
+
+
+def verify_api_key(request: Request):
+    """FastAPI 依赖：校验 API Key。未配置 key 时免认证（兼容升级）。"""
+    required_key = _get_api_key()
+    if not required_key:
+        return  # 未配置 api_key，免认证（向后兼容）
+    key = request.headers.get("X-API-Key", "")
+    if not key:
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            key = auth[7:]
+    if not key or key != required_key:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
 
 # ═══════════════════════════════════════════════════
 # Routes
@@ -201,18 +243,18 @@ async def health():
     }
 
 
-@app.post("/add")
+@app.post("/add", dependencies=[Depends(verify_api_key)])
 async def add_memory(req: AddRequest, request: Request):
     """安全写入记忆。
 
     链路：注入防御 → PII脱敏 → 去重 → 矛盾消解 → 语义判重 → 写入
-    user_id 优先级：请求头 X-User-ID > 请求体 user_id > 默认 "bo"
+    user_id 优先级：请求头 X-User-ID > 请求体 user_id > 默认 MEM0X_DEFAULT_USER
     """
     memory = get_memory()
     start = time.time()
 
     # 从请求头或请求体获取 user_id/agent_id
-    user_id = request.headers.get("X-User-ID") or req.user_id or "bo"
+    user_id = request.headers.get("X-User-ID") or req.user_id or os.environ.get("MEM0X_DEFAULT_USER", "bo")
     agent_id = request.headers.get("X-Agent-ID") or req.agent_id or "hermes"
 
     # 构建 filters（mem0 2.0+ 必须有 user_id/agent_id/run_id 之一）
@@ -275,18 +317,18 @@ async def add_memory(req: AddRequest, request: Request):
     return result
 
 
-@app.post("/search")
+@app.post("/search", dependencies=[Depends(verify_api_key)])
 async def search_memory(req: SearchRequest, request: Request):
     """搜索记忆。
 
     链路：向量检索 → Neo4j引导查询 → 5维打分 → rerank → salience boost
-    user_id 优先级：请求头 X-User-ID > 请求体 user_id > 默认 "bo"
+    user_id 优先级：请求头 X-User-ID > 请求体 user_id > 默认 MEM0X_DEFAULT_USER
     """
     memory = get_memory()
     start = time.time()
 
     # 从请求头或请求体获取 user_id/agent_id
-    user_id = request.headers.get("X-User-ID") or req.user_id or "bo"
+    user_id = request.headers.get("X-User-ID") or req.user_id or os.environ.get("MEM0X_DEFAULT_USER", "bo")
     agent_id = request.headers.get("X-Agent-ID") or req.agent_id or "hermes"
 
     # 构建 filters（mem0 2.0+ 必须有 user_id/agent_id/run_id 之一）
@@ -442,7 +484,7 @@ async def search_memory(req: SearchRequest, request: Request):
     }
 
 
-@app.post("/delete")
+@app.post("/delete", dependencies=[Depends(verify_api_key)])
 async def delete_memory(req: DeleteRequest):
     """删除记忆（级联清理 Qdrant + salience + Neo4j）。
 
@@ -473,7 +515,7 @@ async def delete_memory(req: DeleteRequest):
     return {"status": "ok", "memory_id": req.memory_id, "action": "soft_deleted"}
 
 
-@app.post("/delete/confirm")
+@app.post("/delete/confirm", dependencies=[Depends(verify_api_key)])
 async def delete_memory_confirm(req: DeleteRequest):
     """硬删除记忆（级联清理 Qdrant + salience + Neo4j）。
 
@@ -510,7 +552,7 @@ async def delete_memory_confirm(req: DeleteRequest):
     return {"status": "ok", "memory_id": req.memory_id, "action": "hard_deleted"}
 
 
-@app.post("/update")
+@app.post("/update", dependencies=[Depends(verify_api_key)])
 async def update_memory(req: UpdateRequest):
     """更新记忆内容（Qdrant + Neo4j 双端同步）。
 
@@ -585,7 +627,7 @@ async def update_memory(req: UpdateRequest):
         raise HTTPException(status_code=500, detail=f"mem0 update failed: {e}")
 
 
-@app.get("/degradation")
+@app.get("/degradation", dependencies=[Depends(verify_api_key)])
 async def get_degradation():
     """获取降级状态。"""
     return {
@@ -594,7 +636,7 @@ async def get_degradation():
     }
 
 
-@app.get("/stats")
+@app.get("/stats", dependencies=[Depends(verify_api_key)])
 async def get_stats():
     """查询 Qdrant 和 Neo4j 数据量。
 
@@ -647,7 +689,7 @@ async def get_stats():
     return result
 
 
-@app.post("/expire")
+@app.post("/expire", dependencies=[Depends(verify_api_key)])
 async def expire_memories():
     """手动触发过期清理。
 
@@ -665,7 +707,7 @@ async def expire_memories():
     }
 
 
-@app.get("/expire/status")
+@app.get("/expire/status", dependencies=[Depends(verify_api_key)])
 async def expire_status():
     """查询 auto_expire 后台线程状态。"""
     return {
@@ -673,7 +715,7 @@ async def expire_status():
     }
 
 
-@app.post("/consolidate")
+@app.post("/consolidate", dependencies=[Depends(verify_api_key)])
 async def consolidate_memories():
     """手动触发记忆整合。
 
@@ -690,7 +732,7 @@ async def consolidate_memories():
     }
 
 
-@app.get("/consolidate/status")
+@app.get("/consolidate/status", dependencies=[Depends(verify_api_key)])
 async def consolidate_status():
     """查询 consolidation 后台线程状态。"""
     return {
@@ -706,7 +748,7 @@ class CoreMemoryRequest(BaseModel):
     importance: float = Field(default=0.5, ge=0.0, le=1.0, description="重要性 0-1")
 
 
-@app.post("/core-memory/add")
+@app.post("/core-memory/add", dependencies=[Depends(verify_api_key)])
 async def add_core_memory(req: CoreMemoryRequest):
     """将记忆标记为核心记忆（不会被 auto_expire 清理）。"""
     memory = get_memory()
@@ -724,14 +766,14 @@ async def add_core_memory(req: CoreMemoryRequest):
     return {"status": "ok" if ok else "error", "memory_id": req.memory_id}
 
 
-@app.post("/core-memory/remove")
+@app.post("/core-memory/remove", dependencies=[Depends(verify_api_key)])
 async def remove_core_memory(memory_id: str):
     """移除核心记忆标记。"""
     ok = core_memory.remove_core_memory(memory_id)
     return {"status": "ok" if ok else "error", "memory_id": memory_id}
 
 
-@app.get("/core-memory/check/{memory_id}")
+@app.get("/core-memory/check/{memory_id}", dependencies=[Depends(verify_api_key)])
 async def check_core_memory(memory_id: str):
     """检查是否为核心记忆。"""
     return {
@@ -740,7 +782,7 @@ async def check_core_memory(memory_id: str):
     }
 
 
-@app.get("/core-memory/list")
+@app.get("/core-memory/list", dependencies=[Depends(verify_api_key)])
 async def list_core_memories(category: Optional[str] = None, limit: int = 100):
     """列出核心记忆。"""
     return {
@@ -748,7 +790,7 @@ async def list_core_memories(category: Optional[str] = None, limit: int = 100):
     }
 
 
-@app.get("/core-memory/{memory_id}")
+@app.get("/core-memory/{memory_id}", dependencies=[Depends(verify_api_key)])
 async def get_core_memory(memory_id: str):
     """获取核心记忆详情。"""
     result = core_memory.get_core_memory(memory_id)
@@ -757,7 +799,7 @@ async def get_core_memory(memory_id: str):
     return result
 
 
-@app.put("/core-memory/importance")
+@app.put("/core-memory/importance", dependencies=[Depends(verify_api_key)])
 async def update_importance(memory_id: str, importance: float):
     """更新核心记忆重要性。"""
     ok = core_memory.update_importance(memory_id, importance)
@@ -766,7 +808,7 @@ async def update_importance(memory_id: str, importance: float):
 
 # ── Evolve 端点 ──
 
-@app.post("/evolve")
+@app.post("/evolve", dependencies=[Depends(verify_api_key)])
 async def evolve_memories():
     """手动触发记忆自进化。
 
@@ -781,7 +823,7 @@ async def evolve_memories():
     return result
 
 
-@app.get("/evolve/status")
+@app.get("/evolve/status", dependencies=[Depends(verify_api_key)])
 async def evolve_status():
     """查询 evolve_mem 后台线程状态。"""
     return {
@@ -789,7 +831,7 @@ async def evolve_status():
     }
 
 
-@app.get("/evolve/quality")
+@app.get("/evolve/quality", dependencies=[Depends(verify_api_key)])
 async def memory_quality():
     """分析当前记忆质量。"""
     memory = get_memory()
@@ -798,7 +840,7 @@ async def memory_quality():
 
 # ── Reflect 端点 ──
 
-@app.post("/reflect")
+@app.post("/reflect", dependencies=[Depends(verify_api_key)])
 async def reflect_memory_system():
     """手动触发系统反思。
 
@@ -812,7 +854,7 @@ async def reflect_memory_system():
     return result
 
 
-@app.get("/reflect/status")
+@app.get("/reflect/status", dependencies=[Depends(verify_api_key)])
 async def reflect_status():
     """查询 reflect 后台线程状态。"""
     return {
@@ -827,7 +869,7 @@ async def system_health():
     return reflect.analyze_system_health(memory)
 
 
-@app.get("/reflect/logs")
+@app.get("/reflect/logs", dependencies=[Depends(verify_api_key)])
 async def reflect_logs(limit: int = 10):
     """列出最近的反思日志。"""
     return {
@@ -837,7 +879,7 @@ async def reflect_logs(limit: int = 10):
 
 # ── Version Tracker 端点 ──
 
-@app.get("/versions/stats")
+@app.get("/versions/stats", dependencies=[Depends(verify_api_key)])
 async def version_stats():
     """查询版本追踪统计。"""
     return {
@@ -845,7 +887,7 @@ async def version_stats():
     }
 
 
-@app.get("/versions/{memory_id}")
+@app.get("/versions/{memory_id}", dependencies=[Depends(verify_api_key)])
 async def get_versions(memory_id: str, limit: int = 20):
     """查询记忆的版本历史（最新在前）。"""
     versions = version_tracker.get_versions(memory_id, limit)
@@ -861,7 +903,7 @@ class RollbackRequest(BaseModel):
     version: int = Field(..., description="要回滚到的版本号")
 
 
-@app.post("/versions/{memory_id}/rollback")
+@app.post("/versions/{memory_id}/rollback", dependencies=[Depends(verify_api_key)])
 async def rollback_version(memory_id: str, req: RollbackRequest):
     """回滚到指定版本。
 
@@ -913,7 +955,7 @@ async def rollback_version(memory_id: str, req: RollbackRequest):
 
 # ── Graph Export 端点 ──
 
-@app.get("/graph/export")
+@app.get("/graph/export", dependencies=[Depends(verify_api_key)])
 async def export_graph(
     limit: int = 200,
     depth: int = 2,
@@ -933,7 +975,7 @@ async def export_graph(
 
 # ── Hot Archive 端点 ──
 
-@app.get("/archive/candidates")
+@app.get("/archive/candidates", dependencies=[Depends(verify_api_key)])
 async def archive_candidates():
     """查询热知识候选（满足阈值但尚未归档的记忆）。"""
     candidates = hot_archive.find_hot_candidates()
@@ -943,14 +985,14 @@ async def archive_candidates():
     }
 
 
-@app.post("/archive/run")
+@app.post("/archive/run", dependencies=[Depends(verify_api_key)])
 async def archive_run():
     """手动触发热知识归档。"""
     result = hot_archive.run_archive_cycle()
     return result
 
 
-@app.get("/archive/status")
+@app.get("/archive/status", dependencies=[Depends(verify_api_key)])
 async def archive_status():
     """查询 hot_archive 后台线程状态。"""
     return {

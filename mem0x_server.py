@@ -237,7 +237,13 @@ import secrets
 import sqlite3
 
 _DELETE_CONFIRM_TTL = 300  # 5分钟有效期
-_DELETE_SECRET = os.environ.get("MEM0X_DELETE_SECRET") or secrets.token_hex(16)
+# ⚠️ 多 worker/gunicorn 场景必须显式设置 MEM0X_DELETE_SECRET 环境变量
+# 否则每个 worker 各自生成不同 secret，token 跨 worker 不互通
+_delete_secret_raw = os.environ.get("MEM0X_DELETE_SECRET")
+if not _delete_secret_raw:
+    logger.warning("MEM0X_DELETE_SECRET 未设置，自动生成（多 worker 场景请显式配置）")
+    _delete_secret_raw = secrets.token_hex(16)
+_DELETE_SECRET: str = _delete_secret_raw
 _pending_deletions: dict[str, dict] = {}  # {token: {memory_id, expires_at, user_id, used}}
 _pending_deletions_lock = threading.Lock()
 

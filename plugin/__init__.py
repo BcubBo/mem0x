@@ -191,20 +191,28 @@ class Mem0RemoteProvider(MemoryProvider):
 
     def __init__(self, config: dict = None):
         self._config = config or {}
+        self._avail_lock = threading.Lock()
+        self._avail_cache: tuple[bool, float] = (False, 0.0)
 
     def is_available(self) -> bool:
         """检查服务是否可用。带5秒缓存，避免重复网络调用阻塞启动。"""
         now = time.time()
-        if hasattr(self, '_avail_cache') and now - self._avail_cache[1] < 5.0:
+        # 快速路径：缓存命中（无锁，引用赋值原子）
+        if now - self._avail_cache[1] < 5.0:
             return self._avail_cache[0]
-        try:
-            client = _get_client()
-            result = client.try_request("GET", "/health", timeout=2.0)
-            ok = result is not None and result.get("status") in ("ok", "degraded")
-        except Exception:
-            ok = False
-        self._avail_cache = (ok, now)
-        return ok
+        # 慢路径：网络检查（锁防并发重复请求）
+        with self._avail_lock:
+            # double-check：等锁期间可能已被其他线程更新
+            if time.time() - self._avail_cache[1] < 5.0:
+                return self._avail_cache[0]
+            try:
+                client = _get_client()
+                result = client.try_request("GET", "/health", timeout=2.0)
+                ok = result is not None and result.get("status") in ("ok", "degraded")
+            except Exception:
+                ok = False
+            self._avail_cache = (ok, time.time())
+            return ok
 
     def initialize(self, session_id: str = "", **kwargs) -> None:
         """初始化（无操作，服务端已初始化）。"""

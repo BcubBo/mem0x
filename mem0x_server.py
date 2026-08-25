@@ -1,4 +1,4 @@
-"""api_server — bMem0X 独立服务入口
+"""api_server — mem0x 独立服务入口
 
 FastAPI HTTP 服务，提供 /add, /search, /delete, /health 端点。
 """
@@ -79,6 +79,30 @@ class UpdateRequest(BaseModel):
     memory_id: str = Field(..., description="记忆 ID")
     content: str = Field(..., description="新内容")
     metadata: Optional[Dict[str, Any]] = None
+
+
+class UnifiedRequest(BaseModel):
+    """统一 API 入口请求。action 指定操作，params 传递该操作的参数。"""
+    action: str = Field(..., description="操作类型: add/search/delete/update")
+    params: Dict[str, Any] = Field(default_factory=dict, description="操作参数")
+
+
+def _extract_identity(request: Request) -> dict:
+    """从 header 提取请求身份，返回统一上下文。
+
+    优先级：header > body > 默认值
+    所有字段均可为空字符串（不影响业务逻辑）。
+    """
+    return {
+        "user_id":    request.headers.get("X-User-ID", ""),
+        "agent_id":   request.headers.get("X-Agent-ID", ""),
+        "session_id": request.headers.get("X-Session-ID", ""),
+        "platform":   request.headers.get("X-Platform", ""),
+        "chat_id":    request.headers.get("X-Chat-ID", ""),
+        "chat_type":  request.headers.get("X-Chat-Type", ""),
+        "request_id": request.headers.get("X-Request-ID", ""),
+        "source":     request.headers.get("X-Source", ""),
+    }
 
 
 # ═══════════════════════════════════════════════════
@@ -213,6 +237,7 @@ import secrets
 import sqlite3
 
 _DELETE_CONFIRM_TTL = 300  # 5分钟有效期
+_DELETE_SECRET = os.environ.get("MEM0X_DELETE_SECRET") or secrets.token_hex(16)
 _pending_deletions: dict[str, dict] = {}  # {token: {memory_id, expires_at, user_id, used}}
 _pending_deletions_lock = threading.Lock()
 
@@ -276,7 +301,7 @@ def _log_delete_event(token: str, memory_id: str, user_id: str = None,
 
 def _generate_delete_token(memory_id: str, user_id: str = None, api_key: str = None) -> str:
     """生成删除确认 token（HMAC-based，5分钟有效，绑定 user_id）。"""
-    secret = os.environ.get("MEM0X_DELETE_SECRET", secrets.token_hex(16))
+    secret = _DELETE_SECRET
     timestamp = str(int(time.time()))
     token = hmac.new(secret.encode(), f"{memory_id}:{timestamp}".encode(), hashlib.sha256).hexdigest()[:16]
     with _pending_deletions_lock:
@@ -555,6 +580,13 @@ async def add_memory(req: AddRequest, request: Request):
         except Exception as e:
             logger.debug("neo4j write 失败: %s", e)
 
+        # FTS5 双写
+        try:
+            from wrapper.fts5_store import get_fts5
+            get_fts5().write(memory_id, content, user_id)
+        except Exception as e:
+            logger.debug("FTS5 write 失败: %s", e)
+
     elapsed_ms = int((time.time() - start) * 1000)
     result["elapsed_ms"] = elapsed_ms
     return result
@@ -582,14 +614,56 @@ async def search_memory(req: SearchRequest, request: Request):
     # 构建 filters（mem0 2.0+ 必须有 user_id/agent_id/run_id 之一）
     filters = {"user_id": user_id, "agent_id": agent_id}
 
-    # 向量检索（缩小候选池，用 top 结果引导 Neo4j）
+    # 并行检索：Qdrant 向量 + FTS5 关键词
     search_limit = 20
-    try:
-        raw = await memory.search(req.query, filters=filters, top_k=search_limit)
-        results = raw.get("results", []) if isinstance(raw, dict) else (raw if isinstance(raw, list) else [])
-    except Exception as e:
-        logger.warning("mem0 search 失败: %s", e)
-        results = []
+    import asyncio
+    from wrapper.fts5_store import get_fts5
+
+    async def _qdrant_search():
+        try:
+            raw = await memory.search(req.query, filters=filters, top_k=search_limit)
+            return raw.get("results", []) if isinstance(raw, dict) else (raw if isinstance(raw, list) else [])
+        except Exception as e:
+            logger.warning("mem0 search 失败: %s", e)
+            return []
+
+    async def _fts5_search():
+        try:
+            loop = asyncio.get_event_loop()
+            fts5 = get_fts5()
+            return await loop.run_in_executor(None, fts5.search, req.query, user_id, search_limit)
+        except Exception as e:
+            logger.debug("FTS5 search 失败: %s", e)
+            return []
+
+    semantic_results, keyword_results = await asyncio.gather(_qdrant_search(), _fts5_search())
+
+    # 合并：以 memory_id 为主键，FTS5 结果注入 bm25_score
+    merged = {}
+    for r in semantic_results:
+        mid = r.get("id")
+        if mid:
+            merged[mid] = r
+
+    for r in keyword_results:
+        mid = r.get("memory_id")
+        if mid and mid in merged:
+            # 已有 Qdrant 结果，注入 FTS5 BM25 分数
+            merged[mid]["bm25_score"] = abs(r["score"])
+        elif mid:
+            # FTS5 独有结果，构造标准格式
+            merged[mid] = {
+                "id": mid,
+                "memory": r["content"],
+                "score": 0,
+                "bm25_score": abs(r["score"]),
+                "metadata": {},
+            }
+
+    results = list(merged.values())
+    logger.info("🔍 search merge: semantic=%d, keyword=%d, merged=%d, with_bm25=%d",
+                len(semantic_results), len(keyword_results), len(results),
+                sum(1 for r in results if r.get("bm25_score") is not None))
 
     # 过滤软删除的记忆（metadata.deleted_at 存在则跳过）
     results = [
@@ -766,7 +840,14 @@ async def delete_memory_confirm(req: DeleteRequest, request: Request):
             hook.cleanup(req.memory_id)
     except Exception as e:
         logger.debug("neo4j cleanup 失败: %s", e)
-    
+
+    # 5. FTS5 清理
+    try:
+        from wrapper.fts5_store import get_fts5
+        get_fts5().delete(req.memory_id)
+    except Exception as e:
+        logger.debug("FTS5 delete 失败: %s", e)
+
     return {"status": "ok", "memory_id": req.memory_id, "action": "hard_deleted"}
 
 
@@ -856,6 +937,14 @@ async def update_memory(req: UpdateRequest, request: Request):
         except Exception as e:
             logger.debug("neo4j update 失败: %s", e)
 
+        # 4. FTS5 双写
+        try:
+            from wrapper.fts5_store import get_fts5
+            _uid = request.headers.get("X-User-ID", "default")
+            get_fts5().write(req.memory_id, cleaned_content, _uid)
+        except Exception as e:
+            logger.debug("FTS5 update 失败: %s", e)
+
         return {"status": "ok", "memory_id": req.memory_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"mem0 update failed: {e}")
@@ -930,10 +1019,9 @@ async def expire_memories():
     扫描所有记忆，删除已过期的条目（基于 lane TTL 或 expires 标记）。
     同步清理 Qdrant + Neo4j。
     """
-    memory = get_memory()
     hook = get_hook()
     start = time.time()
-    deleted = auto_expire.run_expire_cycle(memory, neo4j_hook=hook)
+    deleted = auto_expire.run_expire_cycle(neo4j_hook=hook)
     elapsed_ms = int((time.time() - start) * 1000)
     return {
         "deleted": deleted,
@@ -958,7 +1046,7 @@ async def consolidate_memories():
     memory = get_memory()
     hook = get_hook()
     start = time.time()
-    merged = consolidation.run_consolidation_cycle(memory, neo4j_hook=hook)
+    merged = await consolidation.run_consolidation_cycle(memory, neo4j_hook=hook)
     elapsed_ms = int((time.time() - start) * 1000)
     return {
         "merged": merged,
@@ -1051,7 +1139,7 @@ async def evolve_memories():
     memory = get_memory()
     hook = get_hook()
     start = time.time()
-    result = evolve_mem.run_evolve_cycle(memory, neo4j_hook=hook)
+    result = await evolve_mem.run_evolve_cycle(memory, neo4j_hook=hook)
     elapsed_ms = int((time.time() - start) * 1000)
     result["elapsed_ms"] = elapsed_ms
     return result
@@ -1069,7 +1157,7 @@ async def evolve_status():
 async def memory_quality():
     """分析当前记忆质量。"""
     memory = get_memory()
-    return evolve_mem.analyze_memory_quality(memory)
+    return await evolve_mem.analyze_memory_quality(memory)
 
 
 # ── Reflect 端点 ──
@@ -1082,7 +1170,7 @@ async def reflect_memory_system():
     """
     memory = get_memory()
     start = time.time()
-    result = reflect.run_reflect_cycle(memory)
+    result = await reflect.run_reflect_cycle(memory)
     elapsed_ms = int((time.time() - start) * 1000)
     result["elapsed_ms"] = elapsed_ms
     return result
@@ -1267,6 +1355,84 @@ def _filter_by_time(results: list, before: Optional[str], after: Optional[str]) 
 
 
 # ═══════════════════════════════════════════════════
+# 统一 API 入口
+# ═══════════════════════════════════════════════════
+
+@app.post("/api", dependencies=[Depends(verify_api_key)])
+async def unified_endpoint(req: UnifiedRequest, request: Request):
+    """统一 API 入口。所有操作通过 action 字段路由。
+
+    Header 传递身份信息（X-User-ID, X-Agent-ID 等），
+    body 传递业务参数（action + params）。
+    旧端点仍可直接调用，此端点为推荐方式。
+    """
+    identity = _extract_identity(request)
+    api_key = request.headers.get("X-API-Key", "anonymous")
+    await check_rate_limit_async("/api", api_key)
+
+    action = req.action
+    params = req.params
+
+    logger.info(
+        "📨 /api action=%s user=%s agent=%s source=%s session=%s",
+        action,
+        identity["user_id"] or "(from body)",
+        identity["agent_id"] or "(from body)",
+        identity["source"],
+        identity["session_id"],
+    )
+
+    # ── add ──
+    if action == "add":
+        add_req = AddRequest(
+            messages=params.get("messages", ""),
+            user_id=identity["user_id"] or params.get("user_id"),
+            agent_id=identity["agent_id"] or params.get("agent_id"),
+            metadata=params.get("metadata"),
+            expiration_date=params.get("expiration_date"),
+            infer=params.get("infer", False),
+        )
+        return await add_memory(add_req, request)
+
+    # ── search ──
+    elif action == "search":
+        search_req = SearchRequest(
+            query=params.get("query", ""),
+            user_id=identity["user_id"] or params.get("user_id"),
+            agent_id=identity["agent_id"] or params.get("agent_id"),
+            limit=params.get("limit", 10),
+            rerank=params.get("rerank", True),
+            before=params.get("before"),
+            after=params.get("after"),
+            include_archived=params.get("include_archived", False),
+        )
+        return await search_memory(search_req, request)
+
+    # ── delete ──
+    elif action == "delete":
+        delete_req = DeleteRequest(
+            memory_id=params.get("memory_id", ""),
+            confirm_token=params.get("confirm_token"),
+        )
+        return await delete_memory(delete_req, request)
+
+    # ── update ──
+    elif action == "update":
+        update_req = UpdateRequest(
+            memory_id=params.get("memory_id", ""),
+            content=params.get("content", ""),
+            metadata=params.get("metadata"),
+        )
+        return await update_memory(update_req, request)
+
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown action: {action}. Valid: add, search, delete, update",
+        )
+
+
+# ═══════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════
 
@@ -1278,7 +1444,7 @@ if __name__ == "__main__":
     port = server.get("port", 28768)
     logger.info("启动服务: %s:%d", host, port)
 
-    # uvicorn 日志格式：带时间戳，与 httpx/bMem0X 统一
+    # uvicorn 日志格式：带时间戳，与 httpx/mem0x 统一
     _log_fmt = "%(asctime)s [%(name)s] %(levelname)s %(message)s"
     _log_datefmt = "%H:%M:%S"
     uvicorn_log_config = {

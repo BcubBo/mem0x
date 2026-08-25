@@ -12,7 +12,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
-logger = logging.getLogger("bMem0X.neo4j")
+logger = logging.getLogger("mem0x.neo4j")
 
 # Neo4j 驱动（可选）
 try:

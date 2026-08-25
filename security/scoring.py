@@ -163,7 +163,7 @@ def score_and_rank(
 
         # BM25 分
         content = str(item.get("memory") or item.get("text") or "")
-        bm25_s = _calc_bm25(query, content)
+        bm25_s = _normalize_score(item.get("bm25_score")) if item.get("bm25_score") is not None else _calc_bm25(query, content)
 
         # 时间衰减分
         created_ts = _extract_timestamp(item)

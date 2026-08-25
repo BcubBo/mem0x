@@ -9,7 +9,7 @@ services:
     container_name: mem0xAPI
     restart: unless-stopped
     ports:
-      - "28768:28768"
+      - "127.0.0.1:28768:28768"
     volumes:
       - /home/ubuntu/.mem0x/data:/app/data
       - /home/ubuntu/.mem0x/config-compose.json:/app/config.json:ro

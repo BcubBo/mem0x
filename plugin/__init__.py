@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import threading
+import time
 import urllib.request
 from typing import Any, Dict, List, Optional
 
@@ -29,11 +30,37 @@ class _Client:
         self.base = base_url.rstrip("/")
         self.api_key = api_key
 
-    def request(self, method: str, path: str, body: Any = None, timeout: float = 6.0) -> Any:
-        data = json.dumps(body).encode() if body else None
-        headers = {"Content-Type": "application/json"} if data else {}
+    def _build_headers(self, extra: dict = None) -> dict:
+        """构建请求 header，自动注入身份和上下文信息。"""
+        headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["X-API-Key"] = self.api_key
+        # 身份
+        headers["X-User-ID"] = _get_user_id()
+        headers["X-Agent-ID"] = _get_agent_id()
+        # 上下文（来自飞书消息或 kwargs）
+        ctx = _get_context()
+        _HEADER_MAP = {
+            "session_id": "X-Session-ID",
+            "platform":   "X-Platform",
+            "chat_id":    "X-Chat-ID",
+            "chat_type":  "X-Chat-Type",
+            "request_id": "X-Request-ID",
+        }
+        for key, header in _HEADER_MAP.items():
+            val = ctx.get(key, "")
+            if val:
+                headers[header] = val
+        headers["X-Source"] = "plugin"
+        if extra:
+            headers.update(extra)
+        return headers
+
+    def request(self, method: str, path: str, body: Any = None,
+                timeout: float = 6.0, headers: dict = None) -> Any:
+        data = json.dumps(body).encode() if body else None
+        if headers is None:
+            headers = self._build_headers()
         req = urllib.request.Request(
             f"{self.base}{path}",
             data=data,
@@ -42,6 +69,14 @@ class _Client:
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode())
+
+    def call(self, action: str, params: dict = None,
+             timeout: float = None) -> Optional[Any]:
+        """统一 API 调用。通过 POST /api 发送，自动注入所有 header。"""
+        if timeout is None:
+            timeout = _get_timeout(action)
+        body = {"action": action, "params": params or {}}
+        return self.try_request("POST", "/api", body=body, timeout=timeout)
 
     def try_request(self, method: str, path: str, **kwargs) -> Optional[Any]:
         """失败返回 None，不让对话崩。"""
@@ -121,6 +156,27 @@ def _get_sender_metadata() -> dict:
         return {}
 
 
+def _get_context() -> dict:
+    """构建请求上下文（用于 header 注入）。
+
+    优先从飞书 _msg_ctx 获取，fallback 到空字符串。
+    """
+    try:
+        from hermes_plugins.lark_hls_v2.interceptors import _msg_ctx
+        ctx = _msg_ctx.get()
+        if ctx:
+            return {
+                "session_id": ctx.get("session_id", ""),
+                "platform":   ctx.get("platform", ""),
+                "chat_id":    ctx.get("chat_id", ""),
+                "chat_type":  ctx.get("chat_type", ""),
+                "request_id": ctx.get("message_id", ""),
+            }
+    except Exception:
+        pass
+    return {}
+
+
 # ═══════════════════════════════════════════════════
 # MemoryProvider 接口实现
 # ═══════════════════════════════════════════════════
@@ -137,10 +193,18 @@ class Mem0RemoteProvider(MemoryProvider):
         self._config = config or {}
 
     def is_available(self) -> bool:
-        """检查服务是否可用。"""
-        client = _get_client()
-        result = client.try_request("GET", "/health", timeout=2.0)
-        return result is not None and result.get("status") in ("ok", "degraded")
+        """检查服务是否可用。带5秒缓存，避免重复网络调用阻塞启动。"""
+        now = time.time()
+        if hasattr(self, '_avail_cache') and now - self._avail_cache[1] < 5.0:
+            return self._avail_cache[0]
+        try:
+            client = _get_client()
+            result = client.try_request("GET", "/health", timeout=2.0)
+            ok = result is not None and result.get("status") in ("ok", "degraded")
+        except Exception:
+            ok = False
+        self._avail_cache = (ok, now)
+        return ok
 
     def initialize(self, session_id: str = "", **kwargs) -> None:
         """初始化（无操作，服务端已初始化）。"""
@@ -157,9 +221,7 @@ class Mem0RemoteProvider(MemoryProvider):
     def prefetch(self, query: str, session_id: str = "", **kwargs) -> str:
         """预取记忆（注入 system prompt）。包含向量检索 + Neo4j 图谱联想。"""
         client = _get_client()
-        # 增大 limit 以容纳 Neo4j 联想结果
-        body = {"query": query, "limit": 8, "rerank": True}
-        result = client.try_request("POST", "/search", body=body, timeout=_get_timeout("search"))
+        result = client.call("search", {"query": query, "limit": 8, "rerank": True})
         if not result:
             return ""
 
@@ -197,15 +259,10 @@ class Mem0RemoteProvider(MemoryProvider):
         def _write():
             client = _get_client()
             content = f"User: {user_msg}\nAssistant: {assistant_msg}"
-            body = {
-                "messages": content,
-                "user_id": _get_user_id(),
-                "agent_id": _get_agent_id(),
-                "infer": True,
-            }
+            params = {"messages": content, "infer": True}
             if metadata:
-                body["metadata"] = metadata
-            client.try_request("POST", "/add", body=body, timeout=_get_timeout("add"))
+                params["metadata"] = metadata
+            client.call("add", params)
 
         threading.Thread(target=_write, daemon=True).start()
 
@@ -223,12 +280,7 @@ class Mem0RemoteProvider(MemoryProvider):
             content = "\n".join(
                 f"{m['role']}: {m.get('content', '')}" for m in recent
             )
-            client.try_request("POST", "/add", body={
-                "messages": content,
-                "user_id": _get_user_id(),
-                "agent_id": _get_agent_id(),
-                "infer": True,
-            }, timeout=_get_timeout("add"))
+            client.call("add", {"messages": content, "infer": True})
 
         threading.Thread(target=_write, daemon=True).start()
         return None
@@ -240,13 +292,11 @@ class Mem0RemoteProvider(MemoryProvider):
 
         def _write():
             client = _get_client()
-            client.try_request("POST", "/add", body={
+            client.call("add", {
                 "messages": content,
-                "user_id": _get_user_id(),
-                "agent_id": _get_agent_id(),
                 "infer": True,
                 "metadata": {"source": "MEMORY.md", "action": action},
-            }, timeout=_get_timeout("add"))
+            })
 
         threading.Thread(target=_write, daemon=True).start()
 
@@ -277,42 +327,29 @@ class Mem0RemoteProvider(MemoryProvider):
         if tool_name == "mem0_add":
             content = args.get("content", "")
             metadata = _get_sender_metadata()
-            body = {
-                "messages": content,
-                "user_id": _get_user_id(),
-                "agent_id": _get_agent_id(),
-                "infer": False,
-            }
+            params = {"messages": content, "infer": False}
             if metadata:
-                body["metadata"] = metadata
-            result = client.try_request("POST", "/add", body=body, timeout=_get_timeout("add"))
+                params["metadata"] = metadata
+            result = client.call("add", params)
 
         elif tool_name == "mem0_search":
-            query = args.get("query", "")
-            top_k = args.get("top_k", 10)
-            include_archived = args.get("include_archived", False)
-            result = client.try_request("POST", "/search", body={
-                "query": query,
-                "limit": top_k,
+            result = client.call("search", {
+                "query": args.get("query", ""),
+                "limit": args.get("top_k", 10),
                 "rerank": True,
-                "include_archived": include_archived,
-                "user_id": _get_user_id(),
-                "agent_id": _get_agent_id(),
-            }, timeout=_get_timeout("search"))
+                "include_archived": args.get("include_archived", False),
+            })
 
         elif tool_name == "mem0_delete":
-            memory_id = args.get("memory_id", "")
-            result = client.try_request("POST", "/delete", body={
-                "memory_id": memory_id,
-            }, timeout=_get_timeout("search"))
+            result = client.call("delete", {
+                "memory_id": args.get("memory_id", ""),
+            })
 
         elif tool_name == "mem0_update":
-            memory_id = args.get("memory_id", "")
-            content = args.get("content", "")
-            result = client.try_request("POST", "/update", body={
-                "memory_id": memory_id,
-                "content": content,
-            }, timeout=_get_timeout("search"))
+            result = client.call("update", {
+                "memory_id": args.get("memory_id", ""),
+                "content": args.get("content", ""),
+            })
 
         else:
             result = None

@@ -1,2 +1,2 @@
 # wrapper/__init__.py
-"""bMem0X wrapper layer."""
+"""mem0x wrapper layer."""

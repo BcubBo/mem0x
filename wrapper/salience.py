@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-logger = logging.getLogger("bMem0X.salience")
+logger = logging.getLogger("mem0x.salience")
 
 # ── 默认配置 ──
 DEFAULT_INITIAL = 0.5

@@ -1,6 +1,6 @@
 """security.pipeline — 写入链路编排（standalone 版）
 
-完整链路：注入防御→PII脱敏→搜索候选→Jaccard去重→矛盾消解→LLM语义判重→存入
+完整链路：注入防御→PII脱敏→搜索候选→矛盾消解→Jaccard去重→存入
 """
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from typing import Any, Optional
 from .injection_guard import validate_memory_content
 from .dedup import find_duplicate
 from .conflict_resolver import detect_and_resolve
-from .self_edit import self_edit_on_add
 
 logger = logging.getLogger("mem0x.pipeline")
 
@@ -134,7 +133,7 @@ async def safe_add(
     # 1.5 PII 脱敏（必须在搜索之前，确保搜索用脱敏文本）
     content = redact_pii(content)
 
-    # 2. 搜索一次（共享给 dedup + self_edit，省一次 embedder 调用）
+    # 2. 搜索一次（共享给 dedup，省一次 embedder 调用）
     if filters is None:
         filters = {}
         if user_id:
@@ -202,9 +201,15 @@ async def safe_add(
         except Exception as e:
             logger.warning("dedup update 失败: %s", e)
             return {"action": "error", "reason": f"dedup update failed: {e}"}
+        # FTS5 同步：dedup 更新了内容，同步到 FTS5
+        try:
+            from wrapper.fts5_store import get_fts5
+            get_fts5().write(mem_id, content, user_id)
+        except Exception as e:
+            logger.debug("FTS5 dedup sync 失败: %s", e)
         return {"action": "duplicate", "memory_id": mem_id, "similarity": sim}
 
-    # 5. 正常写入（矛盾消解已判断关系，Jaccard已去重，跳过LLM语义判重）
+    # 5. 正常写入
     try:
         add_kwargs = {
             "user_id": user_id,

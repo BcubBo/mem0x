@@ -199,6 +199,7 @@ def _llm_judge_contradiction(
         if getattr(message, "reasoning_content", None):
             reasoning = message.reasoning_content.strip()
             logger.info("LLM reasoning_content length: %d", len(reasoning))
+            logger.info("LLM reasoning_content FULL:\n%s", reasoning)
 
         # 如果 content 为空但有 reasoning_content，从推理内容中提取 JSON
         if not content and reasoning:

@@ -254,7 +254,7 @@ async def _update_usage_stats_sync(memory_instance, memory_ids: list):
     # 批量更新
     update_tasks = []
     for mid, meta in results:
-        current_count = meta.get("search_count", 0)
+        current_count = (meta or {}).get("search_count", 0)
         new_count = int(current_count) + 1 if isinstance(current_count, (int, float)) else 1
         update_tasks.append(
             memory_instance.update(mid, metadata={"search_count": new_count, "last_accessed_at": now})

@@ -119,7 +119,7 @@ def _get_client() -> _Client:
 
 
 def _get_user_id() -> str:
-    return _load_config().get("user_id", "bo")
+    return _load_config().get("user_id", "default")
 
 
 def _get_agent_id() -> str:
@@ -422,33 +422,14 @@ def register(ctx) -> None:
 
     ctx 是 _ProviderCollector 实例，调用 ctx.register_memory_provider() 注册。
     激活方式：config.yaml 中设置 memory.provider: mem0x
+
+    register_memory_provider 会读取 provider.get_tool_schemas() 返回的所有工具
+    并通过 inject_memory_provider_tools 注入到 agent，包括 search/add/update/delete。
     """
     global _provider
     _provider = Mem0RemoteProvider()
     ctx.register_memory_provider(_provider)
-
-    # 注册 update/delete 为 agent 可调用工具
-    # register_memory_provider 只暴露 search/add，update/delete 需要单独注册
-    def _handle_delete(args):
-        return _provider.handle_tool_call("mem0_delete", args)
-    def _handle_update(args):
-        return _provider.handle_tool_call("mem0_update", args)
-
-    ctx.register_tool(
-        name="mem0_delete",
-        toolset="memory",
-        schema=DELETE_SCHEMA,
-        handler=_handle_delete,
-        description="删除长期记忆。",
-    )
-    ctx.register_tool(
-        name="mem0_update",
-        toolset="memory",
-        schema=UPDATE_SCHEMA,
-        handler=_handle_update,
-        description="更新长期记忆内容。",
-    )
-    logger.info("mem0x plugin registered (search/add via memory_provider, update/delete via register_tool)")
+    logger.info("mem0x plugin registered via ctx.register_memory_provider()")
 
 
 def get_provider() -> Mem0RemoteProvider:

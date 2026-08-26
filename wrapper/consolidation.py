@@ -503,12 +503,22 @@ async def find_merge_groups(
             # 两个条件都满足，合并
             uf.union(i, j)
 
-    # 6. 提取聚类结果
+    # 6. 提取聚类结果（附带 avg_cosine）
     clusters = uf.clusters()
     groups = []
     for root, members in clusters.items():
         if len(members) >= MIN_GROUP_SIZE and len(members) <= MAX_GROUP_SIZE:
             group = [candidates[i] for i in members]
+            # 计算组内平均 cosine
+            if sim_matrix is not None and len(members) > 1:
+                sims = []
+                for i in range(len(members)):
+                    for j in range(i + 1, len(members)):
+                        sims.append(float(sim_matrix[members[i]][members[j]]))
+                avg_cosine = sum(sims) / len(sims) if sims else 0.0
+            else:
+                avg_cosine = 0.0
+            group.append({"_avg_cosine": avg_cosine})  # 附加到组末尾
             groups.append(group)
 
     # 按组大小降序（先处理大组）
@@ -516,6 +526,100 @@ async def find_merge_groups(
 
     logger.info("consolidation: 发现 %d 个可合并组", len(groups))
     return groups
+
+
+def _pick_best_memory(group: list) -> str:
+    """从一组相似记忆中选最佳（无 LLM）。
+
+    优先级：质量分数 > 访问次数 > 文本长度 > 时间新旧
+    """
+    best = None
+    best_score = -1
+    for item in group:
+        if isinstance(item, dict) and "_avg_cosine" in item:
+            continue  # 跳过附加的 cosine 标记
+        text = item.get("memory", "")
+        metadata = item.get("metadata") or {}
+        created_at = item.get("created_at")
+
+        # 质量分数
+        from wrapper.fsrs_bridge import get_quality_score
+        access_count = metadata.get("access_count", 0) or 0
+        quality = get_quality_score(metadata, created_at, access_count)
+
+        # 文本长度（更详细 = 更好）
+        length_score = min(len(text) / 200.0, 1.0)
+
+        # 综合分数
+        score = quality * 0.6 + length_score * 0.4
+        if score > best_score:
+            best_score = score
+            best = item
+    return best.get("memory", "") if best else ""
+
+
+def _merge_keywords(group: list) -> str:
+    """关键词拼接合并（无 LLM，0.88-0.95 相似度区间）。
+
+    策略：取最长文本为基础，追加其他文本的独特关键词。
+    """
+    # 按文本长度排序，最长的作为基础
+    texts = []
+    for item in group:
+        if isinstance(item, dict) and "_avg_cosine" in item:
+            continue
+        texts.append(item.get("memory", ""))
+    texts.sort(key=len, reverse=True)
+
+    if not texts:
+        return ""
+    if len(texts) == 1:
+        return texts[0]
+
+    base = texts[0]
+    # 提取基础文本的关键词
+    base_words = set(re.findall(r'[\u4e00-\u9fff]{2,}|[A-Za-z]+|\d+', base))
+
+    # 收集其他文本的独特关键词
+    unique_words = []
+    for text in texts[1:]:
+        words = re.findall(r'[\u4e00-\u9fff]{2,}|[A-Za-z]+|\d+', text)
+        for w in words:
+            if w not in base_words and w not in unique_words:
+                unique_words.append(w)
+
+    if unique_words:
+        return base + "；" + "、".join(unique_words)
+    return base
+
+
+def _merge_metadata(group: list, best_text: str) -> dict:
+    """合并元数据：累加 search_count/access_count，取最佳 fsrs_card。"""
+    merged = {
+        "source": "consolidation",
+        "merged_from": [item.get("id", "") for item in group if isinstance(item, dict) and "_avg_cosine" not in item],
+        "merge_count": sum(1 for item in group if isinstance(item, dict) and "_avg_cosine" not in item),
+    }
+
+    # 累加 search_count 和 access_count
+    total_search = 0
+    total_access = 0
+    best_fsrs = None
+    for item in group:
+        if isinstance(item, dict) and "_avg_cosine" in item:
+            continue
+        meta = item.get("metadata") or {}
+        total_search += meta.get("search_count", 0) or 0
+        total_access += meta.get("access_count", 0) or 0
+        if meta.get("fsrs_card") and not best_fsrs:
+            best_fsrs = meta.get("fsrs_card")
+
+    merged["search_count"] = total_search
+    merged["access_count"] = total_access
+    if best_fsrs:
+        merged["fsrs_card"] = best_fsrs
+
+    return merged
 
 
 async def run_consolidation_cycle(
@@ -527,9 +631,9 @@ async def run_consolidation_cycle(
     """执行一轮记忆整合，返回合并数量。
 
     流程：
-    1. find_merge_groups — 聚类
-    2. 对每组调用 LLM 合并
-    3. 写入合并结果，归档旧碎片
+    1. find_merge_groups — 聚类（附带 avg_cosine）
+    2. 按 avg_cosine 分层：≥0.95 选最佳、0.88-0.95 关键词拼接、<0.88 跳过
+    3. 写入合并结果，归档旧碎片，迁移 metadata
     4. 清理 Neo4j
     """
     if not _merge_lock.acquire(blocking=False):
@@ -541,79 +645,94 @@ async def run_consolidation_cycle(
         groups = await find_merge_groups(memory, user_id, agent_id)
 
         for group in groups[:MAX_MERGES_PER_CYCLE]:
-            source_ids = [item.get("id", "") for item in group]
-            source_texts = [item.get("memory", "") for item in group]
+            # 分离 avg_cosine 标记和实际记忆
+            avg_cosine = 0.0
+            memories = []
+            for item in group:
+                if isinstance(item, dict) and "_avg_cosine" in item:
+                    avg_cosine = item["_avg_cosine"]
+                else:
+                    memories.append(item)
+
+            source_ids = [item.get("id", "") for item in memories]
+            source_texts = [item.get("memory", "") for item in memories]
 
             # 检查是否已合并过
             if _is_already_merged(source_ids):
                 logger.debug("跳过已合并组: %s", source_ids[0][:8])
                 continue
 
-            logger.info("合并 %d 条碎片: %s ...",
-                        len(group), source_texts[0][:50])
+            logger.info("合并 %d 条碎片 (cosine=%.2f): %s ...",
+                        len(memories), avg_cosine, source_texts[0][:50])
 
-            # LLM 合并（使用 consolidation 专用 LLM）
-            llm = _get_consolidation_llm(memory)
-            merged_text = _merge_with_llm(source_texts, llm)
-            if not merged_text:
-                logger.warning("LLM 合并失败，跳过这组")
+            # 按相似度分层选择合并策略
+            if avg_cosine >= 0.95:
+                # Exact Dup：选最佳记忆，不调 LLM
+                merged_text = _pick_best_memory(memories)
+                strategy = "pick_best"
+            elif avg_cosine >= 0.88:
+                # Near Dup：关键词拼接，不调 LLM
+                merged_text = _merge_keywords(memories)
+                strategy = "keyword_merge"
+            else:
+                # 低相似度：跳过（不合并）
+                logger.debug("cosine=%.2f < 0.88，跳过", avg_cosine)
                 continue
 
+            if not merged_text:
+                logger.warning("合并失败，跳过这组")
+                continue
+
+            # 合并 metadata
+            merged_meta = _merge_metadata(memories, merged_text)
+
             # 写入合并结果
-            # 注意：infer=False 时 messages 必须是 [{"role":"user","content":"..."}] 格式
             try:
                 new_result = await memory.add(
                     messages=[{"role": "user", "content": merged_text}],
                     user_id=user_id,
                     agent_id=agent_id,
-                    metadata={
-                        "source": "consolidation",
-                        "merged_from": source_ids,
-                        "merge_count": len(source_ids),
-                    },
+                    metadata=merged_meta,
                     infer=False,
                 )
-                # mem0 返回 {"results": [{"id": "...", ...}]}
-                results_list = new_result.get("results", []) if isinstance(new_result, dict) else []
-                new_id = results_list[0].get("id") if results_list else None
+                results = new_result.get("results", []) if isinstance(new_result, dict) else []
+                new_id = results[0].get("id") if results else None
                 if not new_id:
-                    logger.warning("写入合并结果失败")
+                    logger.warning("合并写入未返回 ID")
                     continue
             except Exception as e:
-                logger.error("写入合并结果失败: %s", e)
+                logger.warning("合并写入失败: %s", e)
                 continue
 
-            # 归档旧碎片（标记 archived=true）
-            for item in group:
+            # 归档旧碎片
+            for item in memories:
                 old_id = item.get("id", "")
-                if not old_id:
-                    continue
-                try:
-                    await memory.update(
-                        old_id,
-                        metadata={"archived": True, "merged_into": new_id},
-                    )
-                    _record_archive(old_id, new_id)
-                except Exception as e:
-                    logger.debug("归档失败 %s: %s", old_id[:8], e)
+                if old_id and old_id != new_id:
+                    try:
+                        await memory.update(old_id, metadata={"archived": True, "merged_into": new_id})
+                    except Exception as e:
+                        logger.debug("归档失败 %s: %s", old_id[:8], e)
 
-                # 清理 Neo4j
-                if neo4j_hook and neo4j_hook.enabled:
+            # 清理 Neo4j + 写入新记忆
+            for item in memories:
+                old_id = item.get("id", "")
+                if old_id and neo4j_hook and neo4j_hook.enabled:
                     try:
                         neo4j_hook.cleanup(old_id)
-                    except Exception as e:
-                        logger.debug("Neo4j cleanup 失败 %s: %s", old_id[:8], e)
+                    except Exception:
+                        pass
 
-            # 记录合并历史
-            _record_merge(new_id, source_ids, merged_text)
-            # 写入 Neo4j（新合并记忆的知识图谱）
+            # 写入 Neo4j（新合并记忆）
             if neo4j_hook and neo4j_hook.enabled:
                 try:
                     neo4j_hook.write(new_id, merged_text)
                 except Exception as e:
                     logger.debug("Neo4j 合并写入失败 %s: %s", new_id[:8], e)
+
+            # 记录合并历史
+            _record_merge(new_id, source_ids, merged_text)
             merged_count += 1
-            logger.info("✓ 合并完成: %d 条 → %s", len(source_ids), new_id[:8])
+            logger.info("✓ 合并完成 [%s]: %d 条 → %s", strategy, len(memories), new_id[:8])
 
     except Exception as e:
         logger.error("consolidation 循环异常: %s", e)

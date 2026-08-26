@@ -312,24 +312,24 @@ class Neo4jHook:
             relations = relations[:MAX_WRITE_RELATIONS]
 
         if relations:
-            with self._driver.session() as session:
-                for rel in relations:
-                    from_name = _sanitize_name(rel.get("from", ""))
-                    to_name = _sanitize_name(rel.get("to", ""))
-                    rel_type = rel.get("type", "RELATED")
-                    # 严格校验：只允许字母和下划线，最长64字符，防止 Cypher 注入
-                    if not re.match(r'^[A-Za-z_]{1,64}$', rel_type):
-                        logger.warning("neo4j: 非法 rel_type: %s, 回退 RELATED", rel_type)
-                        rel_type = "RELATED"
-                    if from_name and to_name and rel_type in ALLOWED_REL_TYPES:
-                        try:
+            def _do_write_rels():
+                with self._driver.session() as session:
+                    for rel in relations:
+                        from_name = _sanitize_name(rel.get("from", ""))
+                        to_name = _sanitize_name(rel.get("to", ""))
+                        rel_type = rel.get("type", "RELATED")
+                        if not re.match(r'^[A-Za-z_]{1,64}$', rel_type):
+                            rel_type = "RELATED"
+                        if from_name and to_name and rel_type in ALLOWED_REL_TYPES:
                             session.run(
                                 f"MATCH (a {{name: toLower($from_name)}}), (b {{name: toLower($to_name)}}) "
                                 f"MERGE (a)-[r:{rel_type}]->(b)",
                                 from_name=from_name, to_name=to_name,
                             )
-                        except Exception as e:
-                            logger.debug("neo4j: relation creation failed: %s", e)
+            try:
+                _neo4j_retry(_do_write_rels)
+            except Exception as e:
+                logger.debug("neo4j: relation batch write failed (after retries): %s", e)
 
         logger.debug("neo4j: write %d entities, %d relations for %s", len(entities), len(relations), memory_id[:8])
 

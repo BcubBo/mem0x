@@ -42,27 +42,33 @@ def enqueue(content: str, filters: dict, metadata: Optional[dict] = None) -> boo
 
 
 async def _worker(write_fn: Callable):
-    """后台重试 worker，指数退避。"""
+    """后台重试 worker，指数退避（popleft取任务避免竞态）。"""
     while not _stop_event.is_set():
         task = None
         with _queue_lock:
             if _queue and _queue[0]["next_retry_at"] <= time.time():
-                task = _queue[0]
+                task = _queue.popleft()  # 取出而非peek
 
         if task:
             try:
                 result = await write_fn(task["content"], task["filters"], task.get("metadata"))
-                if result and result.get("action") != "error":
-                    with _queue_lock:
-                        _queue.popleft()
-                    logger.info("补偿队列: 重试成功, 剩余=%d", len(_queue))
+                if not result or result.get("action") == "error":
+                    _requeue(task)  # 失败则放回
                 else:
-                    _bump_retry(task)
+                    logger.info("补偿队列: 重试成功, 剩余=%d", len(_queue))
             except Exception as e:
-                _bump_retry(task)
+                _requeue(task)
                 logger.debug("补偿队列: 重试失败: %s", e)
         else:
             await asyncio.sleep(1)
+
+
+def _requeue(task: dict):
+    """失败任务放回队列（重试次数+1）。"""
+    _bump_retry(task)
+    if task["retries"] < MAX_RETRIES:
+        with _queue_lock:
+            _queue.appendleft(task)  # 放回队首
 
 
 def _bump_retry(task: dict):

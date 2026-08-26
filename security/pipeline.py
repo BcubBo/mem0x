@@ -97,6 +97,15 @@ def redact_pii(text: str) -> str:
     return result
 
 
+def _enqueue_compensation(content: str, filters: dict, metadata: dict = None):
+    """写入失败时入补偿队列。"""
+    try:
+        from security.compensation import enqueue
+        enqueue(content, filters, metadata)
+    except Exception:
+        pass
+
+
 async def safe_add(
     memory,
     content: str,
@@ -185,6 +194,7 @@ async def safe_add(
             logger.info("✅ pipeline.added_after_conflict: memory_id=%s", memory_id)
         except Exception as e:
             logger.warning("safe_add conflict后写入异常: %s", e)
+            _enqueue_compensation(content, filters, metadata)
             return {"action": "error", "reason": f"conflict write failed: {e}"}
         return {
             "action": "conflict", "resolved": conflict_result["resolved"],
@@ -229,10 +239,5 @@ async def safe_add(
         return {"action": "added", "memory_id": memory_id}
     except Exception as e:
         logger.warning("safe_add 异常: %s", e)
-        # 入补偿队列，后台重试
-        try:
-            from security.compensation import enqueue
-            enqueue(content, filters, metadata)
-        except Exception:
-            pass
+        _enqueue_compensation(content, filters, metadata)
         return {"action": "error", "reason": str(e)}

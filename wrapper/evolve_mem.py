@@ -102,16 +102,20 @@ async def analyze_memory_quality(memory, user_id: str = "bo", agent_id: str = "h
         if agent_id:
             filters["agent_id"] = agent_id
 
-        # get_all 不支持 offset 分页，直接用 top_k 获取（mem0 内部用 scroll）
+        # 获取全量记忆（游标分页，绕过 mem0 get_all 限制）
         try:
-            results = await asyncio.wait_for(
-                memory.get_all(filters=filters, top_k=500),
-                timeout=30,
+            from wrapper.fetch_all import fetch_all_memories
+            items = await asyncio.wait_for(
+                fetch_all_memories(memory, filters=filters, max_items=500),
+                timeout=60,
             )
         except asyncio.TimeoutError:
-            logger.warning("evolve_mem: get_all 超时")
+            logger.warning("evolve_mem: fetch_all 超时")
             return {"total": 0, "pruned": 0, "error": "timeout"}
-        items = results.get("results", []) if isinstance(results, dict) else []
+        except Exception as e:
+            logger.warning("evolve_mem: fetch_all 失败，fallback get_all: %s", e)
+            result = await memory.get_all(filters=filters, top_k=500)
+            items = result.get("results", []) if isinstance(result, dict) else []
 
         stats["total"] = len(items)
         now = datetime.now(timezone.utc)
@@ -200,16 +204,20 @@ async def run_evolve_cycle(memory, neo4j_hook=None, user_id: str = "bo",
             if agent_id:
                 filters["agent_id"] = agent_id
 
-            # get_all 不支持 offset，直接获取
+            # 获取全量记忆（游标分页）
             try:
-                results = await asyncio.wait_for(
-                    memory.get_all(filters=filters, top_k=500),
-                    timeout=30,
+                from wrapper.fetch_all import fetch_all_memories
+                items = await asyncio.wait_for(
+                    fetch_all_memories(memory, filters=filters, max_items=500),
+                    timeout=60,
                 )
             except asyncio.TimeoutError:
-                logger.warning("evolve_mem: 清理阶段 get_all 超时")
+                logger.warning("evolve_mem: 清理阶段 fetch_all 超时")
                 return {"total": 0, "pruned": 0, "error": "timeout"}
-            items = results.get("results", []) if isinstance(results, dict) else []
+            except Exception as e:
+                logger.warning("evolve_mem: fetch_all 失败，fallback get_all: %s", e)
+                result = await memory.get_all(filters=filters, top_k=500)
+                items = result.get("results", []) if isinstance(result, dict) else []
 
             # FSRS 参数
             FACTORS = 0.9

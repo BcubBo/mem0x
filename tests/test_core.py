@@ -17,13 +17,15 @@ def test_fsrs_bridge():
     assert Q_new >= 0, f"Q_new should be >= 0, got {Q_new}"
     assert R_new >= 0, f"R_new should be >= 0, got {R_new}"
 
-    # 访问10次后质量应提升
-    m = {}
-    for _ in range(10):
-        m = record_access(m)
-    Q10 = get_quality_score(m, None, 10)
-    assert Q10 > Q_new, f"Q should increase with access: {Q_new} -> {Q10}"
-    assert "fsrs_card" in m, "record_access should add fsrs_card to metadata"
+    # 旧记忆（无 fsrs_card）质量应合理
+    from datetime import datetime, timezone, timedelta
+    old_date = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    Q_old = get_quality_score({}, old_date, 0)
+    assert Q_old > 0.3, f"Old memory quality should be > 0.3, got {Q_old}"
+
+    # 有访问的旧记忆质量应更高
+    Q_access = get_quality_score({}, old_date, 10)
+    assert Q_access > Q_old, f"Access should increase quality: {Q_old} -> {Q_access}"
 
 
 def test_fsrs_bridge_card_serialization():

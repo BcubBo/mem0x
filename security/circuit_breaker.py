@@ -59,9 +59,12 @@ class CircuitBreaker:
         with self._lock:
             self._failure_count += 1
             self._last_failure_time = time.time()
-            if self._failure_count >= self.failure_threshold and self._state == State.CLOSED:
+            if self._state == State.CLOSED and self._failure_count >= self.failure_threshold:
                 self._state = State.OPEN
                 logger.warning("断路器 %s: CLOSED → OPEN（连续失败%d次）", self.name, self._failure_count)
+            elif self._state == State.HALF_OPEN:
+                self._state = State.OPEN
+                logger.warning("断路器 %s: HALF_OPEN → OPEN（试探失败）", self.name)
 
     def stats(self) -> dict:
         return {

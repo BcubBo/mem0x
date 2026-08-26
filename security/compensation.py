@@ -87,11 +87,14 @@ def _load_persisted():
         logger.warning("补偿队列加载失败: %s", e)
 
 
-def _clear_persisted():
-    """清空 SQLite 中的已完成任务。"""
+def _clear_persisted(task_content: str = None):
+    """清除 SQLite 中的已完成任务。指定内容时只删该条，否则清全部。"""
     try:
         conn = sqlite3.connect(_DB_PATH, timeout=10)
-        conn.execute("DELETE FROM compensation_queue")
+        if task_content:
+            conn.execute("DELETE FROM compensation_queue WHERE content = ?", (task_content,))
+        else:
+            conn.execute("DELETE FROM compensation_queue")
         conn.commit()
         conn.close()
     except Exception:
@@ -132,7 +135,7 @@ async def _worker(write_fn: Callable):
                 if not result or result.get("action") == "error":
                     _requeue(task)  # 失败则放回
                 else:
-                    _clear_persisted()  # 成功则清空持久化
+                    _clear_persisted(task.get("content"))  # 成功则只清该条
                     logger.info("补偿队列: 重试成功, 剩余=%d", len(_queue))
             except Exception as e:
                 _requeue(task)

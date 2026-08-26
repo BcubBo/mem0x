@@ -81,8 +81,7 @@ async def analyze_memory_quality(memory, user_id: str = "bo", agent_id: str = "h
         return min(entity_density * 0.6 + keyword_density * 0.4, 1.0)
 
     # 阈值配置
-    THRESHOLD_HIGH = 0.6
-    THRESHOLD_LOW = 0.4
+    # 使用模块级配置阈值
 
     stats = {
         "total": 0,
@@ -186,6 +185,7 @@ async def run_evolve_cycle(memory, neo4j_hook=None, user_id: str = "bo",
         # 2. 清理低质量记忆（Q < threshold_low 且非核心）
         if stats["low_quality"] > 0:
             from wrapper.core_memory import is_core_memory
+            from wrapper.index_sync import sync_after_delete
             filters = {"user_id": user_id}
             if agent_id:
                 filters["agent_id"] = agent_id
@@ -214,6 +214,7 @@ async def run_evolve_cycle(memory, neo4j_hook=None, user_id: str = "bo",
                         if Q < prune_threshold and not is_core_memory(mem_id):
                             try:
                                 await memory.delete(mem_id)
+                                sync_after_delete(mem_id, user_id)
                                 result["pruned"] += 1
                                 if neo4j_hook and neo4j_hook.enabled:
                                     try:

@@ -147,6 +147,7 @@ def run_expire_cycle(neo4j_hook=None, user_id: str = "bo") -> int:
                         points_selector=[point.id],
                     )
                     deleted += 1
+                    sync_after_delete(str(point.id), user_id)
                     logger.info("已删除过期记忆: %s | %.40s", point.id, data)
                 except Exception as e:
                     logger.warning("删除失败 %s: %s", point.id, e)
@@ -174,17 +175,24 @@ def _background_loop(interval: int = DEFAULT_INTERVAL):
     global _running
     logger.info("auto_expire 后台线程启动，间隔 %ds", interval)
 
+    from wrapper.evolve_lock import background_tasks_lock
     neo4j_hook = None
     try:
         from wrapper.neo4j_hook import get_hook
+        from wrapper.index_sync import sync_after_delete
         neo4j_hook = get_hook()
     except Exception:
         pass
 
     while _running:
         try:
-            # 获取所有 user_id
+            # 获取共享锁
+            if not background_tasks_lock.acquire(timeout=5):
+                logger.debug("auto_expire: 等待共享锁超时，跳过本轮")
+                time.sleep(interval)
+                continue
             try:
+                # 获取所有 user_id
                 from wrapper.mem0_runtime import get_memory
                 from wrapper.fetch_all import get_distinct_user_ids
                 memory = get_memory()
@@ -200,6 +208,11 @@ def _background_loop(interval: int = DEFAULT_INTERVAL):
                 logger.info("本轮清理 %d 条过期记忆（%d 个用户）", total_deleted, len(user_ids))
         except Exception as e:
             logger.error("auto_expire 循环异常: %s", e)
+        finally:
+            try:
+                background_tasks_lock.release()
+            except Exception:
+                pass
 
         time.sleep(interval)
 

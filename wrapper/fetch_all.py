@@ -119,7 +119,7 @@ async def get_distinct_user_ids(memory_instance) -> List[str]:
             field="user_id",
             limit=100,
         )
-        user_ids = [f.value for f in result.facets if f.value]
+        user_ids = [f.value for f in result.hits if f.value]
         if user_ids:
             logger.info("get_distinct_user_ids (facet): %d 个用户", len(user_ids))
             return user_ids

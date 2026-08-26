@@ -818,6 +818,14 @@ async def run_consolidation_cycle(
 
             # 记录合并历史
             _record_merge(new_id, source_ids, merged_text)
+
+            # 同步 FTS5/salience
+            try:
+                from wrapper.index_sync import sync_after_merge
+                sync_after_merge(new_id, source_ids, merged_text, user_id, merged_meta)
+            except Exception as e:
+                logger.debug("IndexSync 合并同步失败: %s", e)
+
             merged_count += 1
             logger.info("✓ 合并完成 [%s]: %d 条 → %s", strategy, len(memories), new_id[:8])
 

@@ -83,7 +83,7 @@ def get_quality_score(metadata: dict, created_at: str = None,
     """
     card = card_from_metadata(metadata, created_at)
     R = _scheduler.get_card_retrievability(card)
-    S = card.stability
+    S = card.stability or 1.0  # 新卡片 stability 可能为 None
     # 归一化 S：30天为中位数
     S_norm = min(S / 30.0, 1.0)
     # 访问加成：log(1 + count) / 5，上限 1.0

@@ -58,13 +58,13 @@
 | 12 | self_edit死代码 | 审计三 | import从未调用 | ✅ 已修 |
 | 13 | 3份插件拷贝+2个.bak | 审计三 | ⚠️ 已修复 | ✅ 已修 |
 | 28 | pipeline.safe_add异常被吞，重试机制失效 | MiMo审计 | 重试装饰器看不到异常，补偿队列永远不会收到失败通知 | 待修 |
-| 29 | Neo4jHook._write_cache无锁保护+无界增长 | MiMo审计 | 40线程并发竞态+内存泄漏 | 待修 |
+| 29 | Neo4jHook._write_cache无锁保护+无界增长 | MiMo审计 | 40线程并发竞态+内存泄漏 | ✅ 已修 |
 | 30 | 补偿线程未纳入lifespan管理 | MiMo审计 | 优雅关闭时数据不一致 | 待修（方案阶段） |
 | 31 | /health暴露写入指标无认证 | MiMo审计 | 运营信息泄露 | 待修（方案阶段） |
 | 32 | 补偿队列"满时丢弃最旧"语义错误 | MiMo审计 | 最需要补偿的数据最先丢失 | 待修（方案阶段） |
 | 33 | MEM0X_DELETE_SECRET每次重启随机生成 | MiMo审计 | 重启后pending token全部失效 | ✅ 已修 |
 | 43 | rate_limit()依赖是空操作，多数端点无限流 | MiMo全面审计 | /consolidate /evolve /expire等LLM密集端点可被恶意调用耗尽额度 | 待修 |
-| 44 | Rerank同步HTTP调用阻塞事件循环 | MiMo全面审计 | 搜索并发降至1req/10s，高负载下全API延迟飙升 | 待修 |
+| 44 | Rerank同步HTTP调用阻塞事件循环 | MiMo全面审计 | 搜索并发降至1req/10s，高负载下全API延迟飙升 | ✅ 已修 |
 | 45 | Neo4j关系写入Cypher注入风险 | MiMo全面审计 | rel_type通过f-string拼接Cypher，白名单在Python侧可被绕过 | 待修 |
 | 46 | /stats端点无认证 | MiMo全面审计 | 未配置key时暴露Qdrant/Neo4j运营信息 | ✅ 已修 |
 | 47 | RECENCY_LAMBDA全局变量并发修改无锁 | MiMo全面审计 | 并发请求可能使用不同lambda值，打分不可预测 | ✅ 已修 |
@@ -75,8 +75,8 @@
 |---|------|------|------|------|
 | 14 | 搜索N+1（_update_usage_stats_sync） | 审计六 | 最多200次DB往返 | 待修 |
 | 15 | salience N+1（boost_salience_for_results） | 审计六 | 逐条写SQLite | 待修 |
-| 16 | LLM阻塞事件循环（含async重试不兼容） | 审计六+MiMo | 矛盾消解堵死+重试装饰器需async版 | 待修 |
-| 17 | ThreadPoolExecutor每次新建 | 审计六 | 无复用，资源浪费 | 待修 |
+| 16 | LLM阻塞事件循环（含async重试不兼容） | 审计六+MiMo | 矛盾消解堵死+重试装饰器需async版 | ✅ 已修 |
+| 17 | ThreadPoolExecutor每次新建 | 审计六 | 无复用，资源浪费 | ✅ 已修 |
 | 18 | 后台线程top_k=500无分页 | 审计六 | 记忆>500条后永不感知 | 待修 |
 | 19 | 无界线程（plugin每次spawn daemon） | 审计六 | 高频对话无池约束 | 待修 |
 | 34 | Qdrant/Neo4j写入零重试 | MiMo审计 | 核心通路无保障 | 待修（写入可靠性方案） |

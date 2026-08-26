@@ -3,17 +3,18 @@
     "llm": {
       "provider": "openai",
       "config": {
-        "model": "mimo-v2.5-pro",
-        "api_key": "YOUR_API_KEY",
-        "openai_base_url": "https://YOUR_MIMO_API_BASE_URL/v1"
+        "model": "YOUR_LLM_MODEL",
+        "api_key": "YOUR_LLM_API_KEY",
+        "openai_base_url": "YOUR_LLM_BASE_URL",
+        "max_tokens": 5000
       }
     },
     "embedder": {
       "provider": "openai",
       "config": {
         "model": "BAAI/bge-m3",
-        "api_key": "YOUR_API_KEY",
-        "openai_base_url": "https://api.siliconflow.cn/v1"
+        "api_key": "YOUR_EMBEDDING_API_KEY",
+        "openai_base_url": "YOUR_EMBEDDING_BASE_URL"
       }
     },
     "vector_store": {
@@ -25,14 +26,14 @@
         "collection_name": "mem0"
       }
     },
-    "custom_instructions": "从对话中提取值得长期记住的事实。\n\n格式：[P0][tech][lane:project] 事实内容\n\n示例：\n[P0][tech] 端口从8080改为9090\n[P1][lesson] 不要随意改动生产环境\n[P2][preference] 用户偏好简洁输出"
+    "custom_instructions": "【中文技术对话事实提取规则】\n\n每条fact必须以标签开头，格式为：[优先级][分类][lane:过期策略] 事实内容\n\n优先级：[P0]技术决策 [P1]项目教训 [P2]偏好人物\n分类：[tech]技术 [preference]偏好 [person]人物 [project]项目 [lesson]教训\nLane：[lane:identity]永不衰减 [lane:project]180天 [lane:default]30天\n\n实体标注：@项目名\n\n示例：\n输入：端口是28767\n输出：{\"facts\": [\"[P0][tech][lane:project] @hermes 端口28767\"]}\n\n不要提取：临时操作步骤、寒暄确认、工具输出原文\n"
   },
   "rerank": {
     "provider": "siliconflow",
     "config": {
       "model": "BAAI/bge-reranker-v2-m3",
-      "api_key": "YOUR_API_KEY",
-      "openai_base_url": "https://api.siliconflow.cn/v1"
+      "api_key": "YOUR_RERANK_API_KEY",
+      "openai_base_url": "YOUR_RERANK_BASE_URL"
     }
   },
   "neo4j": {
@@ -43,7 +44,8 @@
   },
   "server": {
     "host": "0.0.0.0",
-    "port": 28768
+    "port": 28768,
+    "api_key": "YOUR_SERVER_API_KEY"
   },
   "scoring": {
     "weights": {
@@ -51,11 +53,15 @@
       "bm25": 0.25,
       "time": 0.15,
       "reliability": 0.1,
-      "heat": 0.15,
-      "confidence": 0.1
+      "heat": 0.15
     },
     "recency_lambda": 0.05,
-    "rerank_weight": 0.4
+    "rerank_weight": 0.4,
+    "salience_weight": 0.15
+  },
+  "search": {
+    "top_k": 50,
+    "threshold": 0.05
   },
   "salience": {
     "initial_value": 0.5,
@@ -67,51 +73,59 @@
     "update_threshold": 0.7
   },
   "data_dir": "data",
-  "redact_names": {},
-  "known_persons": [],
   "consolidation": {
     "llm": {
       "provider": "openai",
       "config": {
-        "model": "mimo-v2.5-pro",
-        "api_key": "YOUR_API_KEY",
-        "openai_base_url": "https://YOUR_MIMO_API_BASE_URL/v1"
+        "model": "YOUR_LLM_MODEL",
+        "api_key": "YOUR_LLM_API_KEY",
+        "openai_base_url": "YOUR_LLM_BASE_URL"
       }
     },
     "cursor": {
       "max_candidates": 2000,
       "interval": 7200,
-      "max_merges_per_cycle": 5,
+      "ttl_days": 30,
       "exact_dup_threshold": 0.95,
       "near_dup_threshold": 0.88,
-      "vector_sim_threshold": 0.82,
-      "jaccard_threshold": 0.45
+      "jaccard_threshold": 0.45,
+      "vector_sim_threshold": 0.82
     }
+  },
+  "conflict": {
+    "llm": {
+      "provider": "openai",
+      "config": {
+        "model": "YOUR_LLM_MODEL",
+        "api_key": "YOUR_LLM_API_KEY",
+        "openai_base_url": "YOUR_LLM_BASE_URL",
+        "max_tokens": 5000,
+        "max_llm_calls": 1,
+        "num_votes": 2
+      }
+    },
+    "auto_archive_threshold": 0.8,
+    "notify_threshold": 0.5
+  },
+  "redis": {
+    "host": "redis",
+    "port": 6379,
+    "db": 0
   },
   "evolve_mem": {
     "interval": 14400,
     "threshold_high": 0.7,
     "threshold_low": 0.3
   },
-  "_comment_mem0_llm": "事实提取LLM配置：用于从对话中提取结构化记忆",
-  "_comment_conflict": "矛盾消解配置：新旧记忆矛盾检测+并行投票",
-  "_comment_consolidation": "记忆整合配置：碎片记忆合并",
-  "_comment_rerank": "重排序配置：搜索结果重排序",
-  "_comment_server": "服务配置：监听地址和端口",
-  "_comment_scoring": "打分配置：6维打分权重",
-  "conflict": {
-    "llm": {
-      "provider": "openai",
-      "config": {
-        "model": "mimo-v2.5-pro",
-        "api_key": "YOUR_API_KEY",
-        "openai_base_url": "https://YOUR_MIMO_API_BASE_URL/v1",
-        "max_tokens": 5000,
-        "max_llm_calls": 1,
-        "num_votes": 1
-      }
-    },
-    "auto_archive_threshold": 0.8,
-    "notify_threshold": 0.5
+  "fts5": {
+    "db_path": "data/fts5.db",
+    "tokenizer": "unicode61",
+    "bm25_weight": 0.3,
+    "highlight": true,
+    "hot_words": true,
+    "query_log": true,
+    "extract_tags": true,
+    "search_limit": 20,
+    "hot_words_min_length": 2
   }
 }

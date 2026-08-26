@@ -99,6 +99,62 @@ async def iter_batches(memory_instance, filters: dict = None,
     logger.info("iter_batches: 共获取 %d 条记忆", total)
 
 
+async def get_distinct_user_ids(memory_instance) -> List[str]:
+    """从 Qdrant 获取所有 distinct user_id。
+
+    优先用 facet API（快），fallback 到 scroll 遍历。
+    """
+    try:
+        client = memory_instance.vector_store.client
+        collection = memory_instance.vector_store.collection_name
+    except AttributeError:
+        return ["bo"]  # fallback 默认用户
+
+    # 方式1：facet API（如果可用）
+    try:
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        result = client.facet(
+            collection_name=collection,
+            facet_filter=None,
+            field="user_id",
+            limit=100,
+        )
+        user_ids = [f.value for f in result.facets if f.value]
+        if user_ids:
+            logger.info("get_distinct_user_ids (facet): %d 个用户", len(user_ids))
+            return user_ids
+    except Exception as e:
+        logger.debug("facet 不可用，fallback scroll: %s", e)
+
+    # 方式2：scroll 遍历收集
+    user_ids = set()
+    offset = None
+    while True:
+        try:
+            pts, nxt = client.scroll(
+                collection_name=collection,
+                limit=500,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+        except Exception:
+            break
+        if not pts:
+            break
+        for p in pts:
+            uid = p.payload.get("user_id")
+            if uid:
+                user_ids.add(uid)
+        if not nxt or nxt == offset:
+            break
+        offset = nxt
+
+    result = list(user_ids)
+    logger.info("get_distinct_user_ids (scroll): %d 个用户", len(result))
+    return result
+
+
 async def fetch_all_memories(memory_instance, filters: dict = None,
                             max_items: int = 2000) -> List[dict]:
     """一次性获取全量记忆（兼容旧接口，内部使用分批）。"""

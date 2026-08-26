@@ -628,9 +628,10 @@ async def run_consolidation_cycle(
 # ═══════════════════════════════════════════════════════
 
 def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
-    """后台循环线程（使用共享锁防止与 evolve_mem 并发）。"""
+    """后台循环线程（按 user_id 分批处理所有用户）。"""
     global _running
     from wrapper.evolve_lock import background_tasks_lock
+    from wrapper.fetch_all import get_distinct_user_ids
     logger.info("consolidation v2 后台线程启动，间隔 %ds", interval)
 
     from wrapper.neo4j_hook import get_hook
@@ -642,7 +643,6 @@ def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
 
     while _running:
         try:
-            # 获取共享锁，防止与 evolve_mem 并发
             if not background_tasks_lock.acquire(timeout=5):
                 logger.debug("consolidation: 等待共享锁超时，跳过本轮")
                 time.sleep(interval)
@@ -650,9 +650,15 @@ def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
             try:
                 memory = memory_getter()
                 if memory:
-                    merged = asyncio.run(run_consolidation_cycle(memory, neo4j_hook=neo4j_hook))
-                    if merged > 0:
-                        logger.info("本轮整合 %d 条记忆", merged)
+                    # 获取所有 user_id，逐用户处理
+                    user_ids = asyncio.run(get_distinct_user_ids(memory))
+                    logger.info("consolidation: 处理 %d 个用户", len(user_ids))
+                    total_merged = 0
+                    for uid in user_ids:
+                        merged = asyncio.run(run_consolidation_cycle(memory, neo4j_hook=neo4j_hook, user_id=uid))
+                        total_merged += merged
+                    if total_merged > 0:
+                        logger.info("本轮整合 %d 条记忆（%d 个用户）", total_merged, len(user_ids))
             finally:
                 background_tasks_lock.release()
         except Exception as e:

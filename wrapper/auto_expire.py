@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import threading
@@ -168,11 +169,10 @@ def run_expire_cycle(neo4j_hook=None, user_id: str = "bo") -> int:
 
 
 def _background_loop(interval: int = DEFAULT_INTERVAL):
-    """后台循环线程。"""
+    """后台循环线程（按 user_id 分批处理所有用户）。"""
     global _running
     logger.info("auto_expire 后台线程启动，间隔 %ds", interval)
 
-    # 延迟获取 Neo4j hook
     neo4j_hook = None
     try:
         from wrapper.neo4j_hook import get_hook
@@ -182,9 +182,21 @@ def _background_loop(interval: int = DEFAULT_INTERVAL):
 
     while _running:
         try:
-            deleted = run_expire_cycle(neo4j_hook=neo4j_hook)
-            if deleted > 0:
-                logger.info("本轮清理 %d 条过期记忆", deleted)
+            # 获取所有 user_id
+            try:
+                from wrapper.mem0_runtime import get_memory
+                from wrapper.fetch_all import get_distinct_user_ids
+                memory = get_memory()
+                user_ids = asyncio.run(get_distinct_user_ids(memory))
+            except Exception:
+                user_ids = ["bo"]  # fallback
+
+            total_deleted = 0
+            for uid in user_ids:
+                deleted = run_expire_cycle(neo4j_hook=neo4j_hook, user_id=uid)
+                total_deleted += deleted
+            if total_deleted > 0:
+                logger.info("本轮清理 %d 条过期记忆（%d 个用户）", total_deleted, len(user_ids))
         except Exception as e:
             logger.error("auto_expire 循环异常: %s", e)
 

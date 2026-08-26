@@ -82,11 +82,11 @@ async def analyze_memory_quality(memory, user_id: str = "bo", agent_id: str = "h
     }
 
     try:
-        filters = {"user_id": user_id}
+        filters = {}
+        if user_id:
+            filters["user_id"] = user_id
         if agent_id:
             filters["agent_id"] = agent_id
-
-        # 分批获取全量记忆（不一次性加载到内存）
         try:
             from wrapper.fetch_all import iter_batches
             total = 0
@@ -219,8 +219,10 @@ async def run_evolve_cycle(memory, neo4j_hook=None, user_id: str = "bo",
 
 
 def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
-    """后台循环线程。"""
+    """后台循环线程（按 user_id 分批处理所有用户）。"""
     global _running
+    from wrapper.evolve_lock import background_tasks_lock
+    from wrapper.fetch_all import get_distinct_user_ids
     logger.info("evolve_mem 后台线程启动，间隔 %ds", interval)
 
     from wrapper.neo4j_hook import get_hook
@@ -232,8 +234,6 @@ def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
 
     while _running:
         try:
-            # 获取共享锁，防止与 consolidation 并发
-            from wrapper.evolve_lock import background_tasks_lock
             if not background_tasks_lock.acquire(timeout=5):
                 logger.debug("evolve_mem: 等待共享锁超时，跳过本轮")
                 time.sleep(interval)
@@ -241,9 +241,15 @@ def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
             try:
                 memory = memory_getter()
                 if memory:
-                    result = asyncio.run(run_evolve_cycle(memory, neo4j_hook=neo4j_hook))
-                    if result["pruned"] > 0:
-                        logger.info("本轮自进化: 清理 %d 条", result["pruned"])
+                    # 获取所有 user_id，逐用户处理
+                    user_ids = asyncio.run(get_distinct_user_ids(memory))
+                    logger.info("evolve_mem: 处理 %d 个用户", len(user_ids))
+                    total_pruned = 0
+                    for uid in user_ids:
+                        result = asyncio.run(run_evolve_cycle(memory, neo4j_hook=neo4j_hook, user_id=uid))
+                        total_pruned += result.get("pruned", 0)
+                    if total_pruned > 0:
+                        logger.info("本轮自进化: 清理 %d 条（%d 个用户）", total_pruned, len(user_ids))
             finally:
                 background_tasks_lock.release()
         except Exception as e:

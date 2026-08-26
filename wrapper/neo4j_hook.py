@@ -301,6 +301,10 @@ class Neo4jHook:
                     from_name = _sanitize_name(rel.get("from", ""))
                     to_name = _sanitize_name(rel.get("to", ""))
                     rel_type = rel.get("type", "RELATED")
+                    # 严格校验：只允许字母和下划线，防止 Cypher 注入
+                    if not re.match(r'^[A-Za-z_]+$', rel_type):
+                        logger.warning("neo4j: 非法 rel_type: %s, 回退 RELATED", rel_type)
+                        rel_type = "RELATED"
                     if from_name and to_name and rel_type in ALLOWED_REL_TYPES:
                         try:
                             session.run(

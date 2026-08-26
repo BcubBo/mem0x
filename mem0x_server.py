@@ -20,10 +20,14 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
     datefmt="%H:%M:%S",
 )
-# 抑制 httpx INFO 日志（scroll/get/embeddings 请求刷屏）
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpx2").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
+# 抑制 Qdrant scroll 日志（高频刷屏），保留 embeddings 等关键日志
+class _QdrantScrollFilter(logging.Filter):
+    def filter(self, record):
+        msg = record.getMessage()
+        return "qdrant:6333" not in msg or "scroll" not in msg
+
+logging.getLogger("httpx").addFilter(_QdrantScrollFilter())
+logging.getLogger("httpx2").addFilter(_QdrantScrollFilter())
 logger = logging.getLogger("mem0x")
 
 # ── 确保项目根目录在 sys.path ──

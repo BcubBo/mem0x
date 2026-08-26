@@ -1,4 +1,4 @@
-mem0ai==2.0.18
+mem0ai==2.0.19
 neo4j==6.2.0
 fastapi==0.141.1
 uvicorn==0.52.3

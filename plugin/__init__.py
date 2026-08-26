@@ -119,7 +119,7 @@ def _get_client() -> _Client:
 
 
 def _get_user_id() -> str:
-    return _load_config().get("user_id", "yang")
+    return _load_config().get("user_id", "bo")
 
 
 def _get_agent_id() -> str:

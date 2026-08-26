@@ -79,7 +79,7 @@ def _get_qdrant_client():
     if mem is None:
         return None, None
     client = mem.vector_store.client
-    collection = getattr(mem, "collection_name", "mem0")
+    collection = getattr(mem.vector_store, "collection_name", "mem0")
     return client, collection
 
 

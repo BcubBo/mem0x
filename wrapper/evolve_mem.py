@@ -193,7 +193,6 @@ async def run_evolve_cycle(memory, neo4j_hook=None, user_id: str = "bo",
             # 获取全量记忆（游标分页）
             try:
                 from wrapper.fetch_all import iter_batches
-                THRESHOLD_LOW = 0.4
                 from wrapper.fsrs_bridge import get_quality_score as _get_quality_score
                 prune_threshold = max(THRESHOLD_LOW - 0.1, 0.2)
 

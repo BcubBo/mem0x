@@ -50,7 +50,7 @@
 |---|------|------|------|------|
 | 5 | 召回侧无注入边界 | 审计四 | 存储型注入闭环可达 | ✅ 已修 |
 | 6 | is_available打网络 | 审计四 | 违反宿主契约，慢服务拖慢启动 | ✅ 已修 |
-| 7 | 跨库写入无事务 | 审计五 | 中间失败静默降级，调用方看到"成功" | 待修（见写入可靠性方案） |
+| 7 | 跨库写入无事务 | 审计五 | FTS5事务+补偿队列已覆盖 | ✅ 已修 |
 | 8 | 软删cancel后deleted_at不恢复 | 审计五 | 记忆永久隐藏 | ✅ 已修 |
 | 9 | delete_audit无WAL | 审计五 | 并发删除"database is locked" | ✅ 已修 |
 | 10 | 端口裸绑0.0.0.0 | 审计四 | Docker compose无防火墙 | ✅ 已修 |
@@ -97,7 +97,7 @@
 | 20 | 版本号4处不一致 | 审计二 | FastAPI 0.1.16 / compose 0.1.5 / plugin.yaml 0.1.15 / README v0.1.18.1 | ✅ 已修 |
 | 21 | FSRS函数重复2份 | 审计三 | evolve_mem.py内复制 | ✅ 已修 |
 | 22 | PII正则重复 | 审计三 | pipeline/plugin/neo4j 3处 | ✅ 已修 |
-| 23 | _get_db/_ensure_schema重复 | 审计三 | salience/self_edit/conflict 3处 | 待修 |
+| 23 | _get_db/_ensure_schema重复 | 审计三 | salience/self_edit/conflict 3处 | ✅ 已修 |
 | 24 | 五维vs六维命名不一致 | 审计二 | 代码6权重，文档说"五维" | ✅ 已修 |
 | 25 | 核心记忆存预览非原文 | 审计五 | content_preview[:200] | ✅ 已修 |
 | 26 | 0测试（含写入可靠性测试） | 审计七+MiMo | 无回归保障 | ✅ 已修(基础pytest) |

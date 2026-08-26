@@ -822,7 +822,7 @@ async def search_memory(req: SearchRequest, request: Request):
         await _update_usage_stats_sync(memory, vector_memory_ids)
 
     elapsed_ms = int((time.time() - start) * 1000)
-    logger.info("🔍 search: query=%s, results=%d, elapsed=%dms", req.query[:50], len(results), elapsed_ms)
+    logger.debug("🔍 search: results=%d, elapsed=%dms", len(results), elapsed_ms)
     # 召回侧注入边界：给每个 memory 加标记，防止存储型 prompt 注入
     for r in results:
         mem = r.get("memory")

@@ -320,15 +320,16 @@ class Mem0RemoteProvider(MemoryProvider):
             content = args.get("content", "")
             if content:
                 import re
+                from security.pii import ID_CARD_RE, PHONE_RE, EMAIL_RE, PASSWORD_RE
                 # 身份证、手机、邮箱、密码明文 → 脱敏替换
                 pii_replacements = [
-                    (r'(?<!\d)[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx](?!\d)', '[REDACTED_ID]'),
-                    (r'(?<!\d)1[3-9]\d{9}(?!\d)', '[REDACTED_PHONE]'),
-                    (r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', '[REDACTED_EMAIL]'),
-                    (r'(密码|口令|password|passwd|secret|token|api[_-]?key)\s*[:=]\s*\S+', r'\1=[REDACTED]'),
+                    (ID_CARD_RE, '[REDACTED_ID]'),
+                    (PHONE_RE, '[REDACTED_PHONE]'),
+                    (EMAIL_RE, '[REDACTED_EMAIL]'),
+                    (PASSWORD_RE, r'\1=[REDACTED]'),
                 ]
                 for pattern, replacement in pii_replacements:
-                    content = re.sub(pattern, replacement, content, flags=re.IGNORECASE)
+                    content = pattern.sub(replacement, content)
                 args["content"] = content
         
         if tool_name == "mem0_add":

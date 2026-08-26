@@ -300,6 +300,7 @@ class Neo4jHook:
                             "SET n:$etype, n.original_name = $name, "
                             "n.source_memory_id = CASE "
                             "  WHEN n.source_memory_id IS NULL THEN $mid "
+                            "  WHEN n.source_memory_id CONTAINS $mid THEN n.source_memory_id "
                             "  ELSE n.source_memory_id + ',' + $mid END",
                             name=name, etype=etype, mid=memory_id,
                         )

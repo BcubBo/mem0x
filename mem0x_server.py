@@ -215,7 +215,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="mem0x",
     description="自托管 AI 记忆增强服务",
-    version="0.1.16",
+    version="0.1.25",
     lifespan=lifespan,
 )
 

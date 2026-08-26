@@ -157,7 +157,7 @@ cd /home/ubuntu/workspace/mem0xAPI
 python3 -m py_compile mem0x_server.py
 
 # 构建镜像
-sudo docker build --no-cache -t mem0xapi:v0.1.18.1 .
+sudo docker build --no-cache -t mem0xapi:v0.1.25 .
 
 # 部署
 cd ~/.mem0x

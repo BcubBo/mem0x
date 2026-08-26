@@ -38,18 +38,8 @@ def load_redact_names(config: dict) -> None:
         )
         logger.info("loaded %d redact names from config", len(_REDACT_MAP))
 
-# ── PII 正则（身份证/手机/邮箱） ──
-# 18位身份证：6位地区 + 8位生日 + 3位顺序 + 1位校验
-_ID_CARD_RE = re.compile(r"(?<!\d)[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx](?!\d)")
-# 11位手机号：1[3-9]开头，前后不能紧跟数字（兼容中文环境，不用\b）
-_PHONE_RE = re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")
-# 邮箱
-_EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
-# 密码明文模式（常见标记后的值）
-_PASSWORD_RE = re.compile(
-    r"(密码|password|passwd|secret|token|api[_\-]?key)\s*[:：=]\s*\S+",
-    re.IGNORECASE,
-)
+# ── PII 正则（从 security/pii.py 共享） ──
+from security.pii import ID_CARD_RE as _ID_CARD_RE, PHONE_RE as _PHONE_RE, EMAIL_RE as _EMAIL_RE, PASSWORD_RE as _PASSWORD_RE
 
 
 def add_redact_name(name: str, replacement: str) -> None:

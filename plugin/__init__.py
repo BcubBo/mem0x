@@ -12,13 +12,8 @@ import json
 import logging
 import os
 import threading
-import time
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
-
-# 共享线程池（替代每次新建 daemon thread）
-_write_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="mem0x-write")
 
 logger = logging.getLogger("hermes_plugins.mem0x")
 
@@ -195,23 +190,12 @@ class Mem0RemoteProvider(MemoryProvider):
 
     def __init__(self, config: dict = None):
         self._config = config or {}
-        self._avail_lock = threading.Lock()
-        self._avail_cache: tuple[bool, float] = (False, 0.0)
 
     def is_available(self) -> bool:
-        """检查服务是否可用（config-only，不发网络请求）。"""
-        now = time.time()
-        if now - self._avail_cache[1] < 30.0:
-            return self._avail_cache[0]
-        # 只检查配置是否有 server 地址，不发网络请求
-        try:
-            from plugin import _get_client
-            client = _get_client()
-            ok = client is not None and bool(client.base)
-        except Exception:
-            ok = False
-        self._avail_cache = (ok, time.time())
-        return ok
+        """检查服务是否可用。"""
+        client = _get_client()
+        result = client.try_request("GET", "/health", timeout=2.0)
+        return result is not None and result.get("status") in ("ok", "degraded")
 
     def initialize(self, session_id: str = "", **kwargs) -> None:
         """初始化（无操作，服务端已初始化）。"""
@@ -271,7 +255,7 @@ class Mem0RemoteProvider(MemoryProvider):
                 params["metadata"] = metadata
             client.call("add", params)
 
-        _write_executor.submit(_write)
+        threading.Thread(target=_write, daemon=True).start()
 
     def on_pre_compress(self, messages: list, **kwargs) -> Optional[str]:
         """压缩前抢救。"""
@@ -289,7 +273,7 @@ class Mem0RemoteProvider(MemoryProvider):
             )
             client.call("add", {"messages": content, "infer": True})
 
-        _write_executor.submit(_write)
+        threading.Thread(target=_write, daemon=True).start()
         return None
 
     def on_memory_write(self, action: str, target: str, content: str, metadata: dict = None, **kwargs) -> None:
@@ -305,7 +289,7 @@ class Mem0RemoteProvider(MemoryProvider):
                 "metadata": {"source": "MEMORY.md", "action": action},
             })
 
-        _write_executor.submit(_write)
+        threading.Thread(target=_write, daemon=True).start()
 
     def get_tool_schemas(self) -> List[dict]:
         """返回工具 schema。"""
@@ -320,23 +304,15 @@ class Mem0RemoteProvider(MemoryProvider):
             content = args.get("content", "")
             if content:
                 import re
-                try:
-                    from security.pii import ID_CARD_RE, PHONE_RE, EMAIL_RE, PASSWORD_RE
-                except ImportError:
-                    # 降级：使用内联正则（与 pii.py 一致）
-                    ID_CARD_RE = re.compile(r'(?<!\d)[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx](?!\d)')
-                    PHONE_RE = re.compile(r'(?<!\d)1[3-9]\d{9}(?!\d)')
-                    EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}')
-                    PASSWORD_RE = re.compile(r'(密码|口令|password|passwd|secret|token|api[_-]?key)\s*[:=]\s*\S+', re.IGNORECASE)
                 # 身份证、手机、邮箱、密码明文 → 脱敏替换
                 pii_replacements = [
-                    (ID_CARD_RE, '[REDACTED_ID]'),
-                    (PHONE_RE, '[REDACTED_PHONE]'),
-                    (EMAIL_RE, '[REDACTED_EMAIL]'),
-                    (PASSWORD_RE, r'\1=[REDACTED]'),
+                    (r'(?<!\d)[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx](?!\d)', '[REDACTED_ID]'),
+                    (r'(?<!\d)1[3-9]\d{9}(?!\d)', '[REDACTED_PHONE]'),
+                    (r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', '[REDACTED_EMAIL]'),
+                    (r'(password|passwd|secret|token|api[_-]?key)\s*[:=]\s*\S+', r'\1=[REDACTED]'),
                 ]
                 for pattern, replacement in pii_replacements:
-                    content = pattern.sub(replacement, content)
+                    content = re.sub(pattern, replacement, content, flags=re.IGNORECASE)
                 args["content"] = content
         
         if tool_name == "mem0_add":
@@ -450,7 +426,29 @@ def register(ctx) -> None:
     global _provider
     _provider = Mem0RemoteProvider()
     ctx.register_memory_provider(_provider)
-    logger.info("mem0x plugin registered via ctx.register_memory_provider()")
+
+    # 注册 update/delete 为 agent 可调用工具
+    # register_memory_provider 只暴露 search/add，update/delete 需要单独注册
+    def _handle_delete(args):
+        return _provider.handle_tool_call("mem0_delete", args)
+    def _handle_update(args):
+        return _provider.handle_tool_call("mem0_update", args)
+
+    ctx.register_tool(
+        name="mem0_delete",
+        toolset="memory",
+        schema=DELETE_SCHEMA,
+        handler=_handle_delete,
+        description="删除长期记忆。",
+    )
+    ctx.register_tool(
+        name="mem0_update",
+        toolset="memory",
+        schema=UPDATE_SCHEMA,
+        handler=_handle_update,
+        description="更新长期记忆内容。",
+    )
+    logger.info("mem0x plugin registered (search/add via memory_provider, update/delete via register_tool)")
 
 
 def get_provider() -> Mem0RemoteProvider:

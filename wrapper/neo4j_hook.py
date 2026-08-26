@@ -170,10 +170,13 @@ def _extract_entities(text: str) -> Dict[str, List]:
 class Neo4jHook:
     """Neo4j 知识图谱 hook（standalone 版）。"""
 
+    _MAX_CACHE_SIZE = 100_000
+
     def __init__(self):
         self._driver = None
         self._enabled = False
         self._write_cache: Dict[str, float] = {}  # "name:type" -> timestamp
+        self._cache_lock = threading.Lock()
         self._cache_ttl = 300  # 5分钟内同实体不重复写入
         self._load_config()
 
@@ -241,15 +244,26 @@ class Neo4jHook:
 
         # 缓存去重：跳过已缓存的实体
         now = time.time()
-        uncached_entities = []
-        for entity in entities:
-            name = _sanitize_name(entity.get("name", ""))
-            etype = entity.get("type", "Entity")
-            cache_key = f"{name}:{etype}"
-            if cache_key in self._write_cache and now - self._write_cache[cache_key] < self._cache_ttl:
-                continue  # 跳过已缓存实体
-            self._write_cache[cache_key] = now
-            uncached_entities.append(entity)
+        with self._cache_lock:
+            # 清理过期条目（每次最多清理100个）
+            expired = [k for k, v in self._write_cache.items() if now - v >= self._cache_ttl]
+            for k in expired[:100]:
+                del self._write_cache[k]
+            # 容量上限：淘汰最旧的10%
+            if len(self._write_cache) >= self._MAX_CACHE_SIZE:
+                sorted_keys = sorted(self._write_cache, key=lambda k: self._write_cache.get(k, 0))
+                for k in sorted_keys[:len(sorted_keys) // 10]:
+                    del self._write_cache[k]
+
+            uncached_entities = []
+            for entity in entities:
+                name = _sanitize_name(entity.get("name", ""))
+                etype = entity.get("type", "Entity")
+                cache_key = f"{name}:{etype}"
+                if cache_key in self._write_cache and now - self._write_cache[cache_key] < self._cache_ttl:
+                    continue  # 跳过已缓存实体
+                self._write_cache[cache_key] = now
+                uncached_entities.append(entity)
         
         if not uncached_entities:
             logger.debug("neo4j: all entities cached, skip write")

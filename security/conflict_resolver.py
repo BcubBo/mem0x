@@ -31,6 +31,9 @@ from typing import Optional, Dict, Any
 
 logger = logging.getLogger("mem0x.conflict_resolver")
 
+# ── 共享线程池（#17修复：替代每次新建） ──
+_llm_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="llm-judge")
+
 # ── 实体级互斥锁（防止同一实体并发矛盾消解导致双写竞态） ──
 _entity_locks: dict[str, asyncio.Lock] = {}
 
@@ -285,14 +288,13 @@ def _llm_judge_parallel(
         )
 
     results = [None] * num_votes
-    with ThreadPoolExecutor(max_workers=num_votes) as executor:
-        futures = {executor.submit(_single_vote): i for i in range(num_votes)}
-        for future in as_completed(futures):
-            idx = futures[future]
-            try:
-                results[idx] = future.result()
-            except Exception as e:
-                logger.warning("LLM 投票 %d/%d 失败: %s", idx + 1, num_votes, e)
+    futures = {_llm_executor.submit(_single_vote): i for i in range(num_votes)}
+    for future in as_completed(futures):
+        idx = futures[future]
+        try:
+            results[idx] = future.result()
+        except Exception as e:
+            logger.warning("LLM 投票 %d/%d 失败: %s", idx + 1, num_votes, e)
 
     valid = [r for r in results if r is not None]
     if not valid:
@@ -568,7 +570,11 @@ async def _detect_and_resolve_inner(memory, new_text: str, filters: dict, auto_a
 
             llm_call_count += 1
             logger.info("调用 LLM 并行投票 (%d/%d): new=%s..., old=%s...", llm_call_count, MAX_LLM_CALLS, new_text[:30], old_text[:30])
-            llm_result = _llm_judge_parallel(new_text, old_text, old_meta=meta, old_created_at=old_created_at, num_votes=NUM_VOTES)
+            loop = asyncio.get_event_loop()
+            llm_result = await loop.run_in_executor(
+                _llm_executor,
+                lambda: _llm_judge_parallel(new_text, old_text, old_meta=meta, old_created_at=old_created_at, num_votes=NUM_VOTES),
+            )
             logger.info("LLM 返回结果: %s", llm_result)
             if llm_result and llm_result.get("contradicts"):
                 confidence = llm_result["confidence"]

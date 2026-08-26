@@ -735,7 +735,11 @@ async def search_memory(req: SearchRequest, request: Request):
             from wrapper.mem0_runtime import rerank as do_rerank, load_config
             config = load_config()
             docs = [r.get("memory", "") for r in results]
-            rerank_results = do_rerank(req.query, docs, top_n=req.limit, config=config)
+            loop = asyncio.get_event_loop()
+            rerank_results = await loop.run_in_executor(
+                None,
+                lambda: do_rerank(req.query, docs, top_n=req.limit, config=config),
+            )
             if rerank_results:
                 # 融合 rerank 分数
                 rerank_weight = config.get("scoring", {}).get("rerank_weight", 0.4)

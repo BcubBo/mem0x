@@ -1,9 +1,12 @@
 """FTS5 存储层 — 提供全文检索能力，用于向量召回的补充/回退。"""
 
 import json
+import logging
 import sqlite3
 import time
 from typing import Any
+
+logger = logging.getLogger("fts5")
 
 
 class FTS5Store:
@@ -57,6 +60,7 @@ class FTS5Store:
                 (memory_id, content, user_id),
             )
             self._conn.execute("COMMIT")
+            logger.debug("FTS5 write: id=%s user=%s len=%d", memory_id[:12], user_id, len(content))
         except Exception:
             self._conn.execute("ROLLBACK")
             raise
@@ -71,6 +75,7 @@ class FTS5Store:
                 "DELETE FROM fts5_meta WHERE memory_id = ?", (memory_id,)
             )
             self._conn.execute("COMMIT")
+            logger.debug("FTS5 delete: id=%s", memory_id[:12])
         except Exception:
             self._conn.execute("ROLLBACK")
             raise
@@ -117,6 +122,7 @@ class FTS5Store:
         finally:
             conn.close()
 
+        logger.debug("FTS5 search: query='%s' user=%s tokens=%d results=%d", query[:30], user_id, len(tokens), len(rows))
         return [
             {"memory_id": r[0], "content": r[1], "score": r[2]}
             for r in rows

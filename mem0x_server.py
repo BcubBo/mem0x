@@ -223,7 +223,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="mem0x",
     description="自托管 AI 记忆增强服务",
-    version="0.1.28",
+    version="0.1.30",
     lifespan=lifespan,
 )
 
@@ -734,16 +734,6 @@ async def search_memory(req: SearchRequest, request: Request):
     if req.before or req.after:
         results = _filter_by_time(results, req.before, req.after)
 
-    # Neo4j 引导查询：用 query + top-3 结果文本提取实体，引导图谱查询
-    neo4j_results = []
-    try:
-        hook = get_hook()
-        if hook.enabled:
-            top_texts = [req.query] + [r.get("memory", "") for r in results[:3]]
-            neo4j_results = hook.query(req.query, extra_texts=top_texts)
-    except Exception as e:
-        logger.debug("neo4j query 失败: %s", e)
-        DegradationTracker.record_degradation("neo4j", str(e))
     # 5维打分
     try:
         from wrapper.mem0_runtime import load_config
@@ -799,24 +789,7 @@ async def search_memory(req: SearchRequest, request: Request):
         results = results[:req.limit]
 
 
-# Neo4j 图谱联想追加（格式化 + 动态score）
-    if neo4j_results:
-        for nr in neo4j_results:
-            # 基于关系数量计算score：base 0.2 + 每个关系+0.05，上限0.6
-            relations = nr.get("relations", [])
-            if isinstance(relations, str):
-                relations = [r.strip() for r in relations.split(",") if r.strip()]
-            relation_bonus = min(len(relations) * 0.05, 0.4)
-            score = 0.2 + relation_bonus
-            
-            rel_text = " 关联: " + str(nr.get("relations", "")) if nr.get("relations") else ""
-            results.append({
-                "id": "neo4j:" + nr["name"],
-                "memory": "[" + nr["label"] + "] " + nr["name"] + rel_text,
-                "score": round(score, 2),
-            })
-
-    # 收集需要更新的记忆 ID（只更新向量结果，不更新 neo4j 结果）
+    # 收集需要更新的记忆 ID
     vector_memory_ids = [r["id"] for r in results if r.get("id") and not r["id"].startswith("neo4j:")]
     if vector_memory_ids:
         await _update_usage_stats_sync(memory, vector_memory_ids)

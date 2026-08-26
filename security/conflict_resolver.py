@@ -31,7 +31,7 @@ from typing import Optional, Dict, Any
 
 logger = logging.getLogger("mem0x.conflict_resolver")
 
-# ── 共享线程池（#17修复：替代每次新建） ──
+# ── LLM 投票共享线程池 ──
 _llm_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="llm-judge")
 
 # ── 实体级互斥锁（防止同一实体并发矛盾消解导致双写竞态） ──
@@ -43,8 +43,9 @@ def _get_entity_lock(entity: str) -> asyncio.Lock:
     """获取指定实体的互斥锁（懒创建，超过上限时清理最旧的）。"""
     if entity not in _entity_locks:
         if len(_entity_locks) >= _entity_locks_MAX:
-            # 清理一半最旧的锁（dict 保持插入顺序）
-            to_remove = list(_entity_locks.keys())[:_entity_locks_MAX // 2]
+            # 清理一半最旧的、未在使用的锁
+            to_remove = [k for k in list(_entity_locks.keys())[:_entity_locks_MAX // 2]
+                         if not _entity_locks[k].locked()]
             for k in to_remove:
                 del _entity_locks[k]
         _entity_locks[entity] = asyncio.Lock()

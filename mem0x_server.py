@@ -553,7 +553,6 @@ async def add_memory(req: AddRequest, request: Request):
     链路：注入防御 → PII脱敏 → 去重 → 矛盾消解 → 语义判重 → 写入
     user_id 优先级：请求头 X-User-ID > 请求体 user_id > 默认 "bo"
     """
-    await check_rate_limit_async("/add", request.headers.get("X-API-Key", "anonymous"))
     memory = get_memory()
     start = time.time()
 
@@ -635,7 +634,6 @@ async def search_memory(req: SearchRequest, request: Request):
     链路：向量检索 → Neo4j引导查询 → 5维打分 → rerank → salience boost
     user_id 优先级：请求头 X-User-ID > 请求体 user_id > 默认 "bo"
     """
-    await check_rate_limit_async("/search", request.headers.get("X-API-Key", "anonymous"))
     memory = get_memory()
     start = time.time()
 
@@ -822,7 +820,6 @@ async def search_memory(req: SearchRequest, request: Request):
 @app.post("/delete", dependencies=[Depends(verify_api_key), Depends(rate_limit)])
 async def delete_memory(req: DeleteRequest, request: Request):
     """软删除记忆。搜索时过滤，数据仍保留可恢复。"""
-    await check_rate_limit_async("/delete", request.headers.get("X-API-Key", "anonymous"))
     import re
     from datetime import datetime, timezone
     
@@ -850,7 +847,6 @@ async def delete_memory(req: DeleteRequest, request: Request):
 @app.post("/delete/confirm", dependencies=[Depends(verify_api_key), Depends(rate_limit)])
 async def delete_memory_confirm(req: DeleteRequest, request: Request):
     """硬删除记忆（需带 confirm_token，5分钟内有效）。"""
-    await check_rate_limit_async("/delete/confirm", request.headers.get("X-API-Key", "anonymous"))
     import re
     
     if not req.confirm_token:
@@ -907,7 +903,6 @@ async def delete_memory_confirm(req: DeleteRequest, request: Request):
 @app.post("/delete/cancel", dependencies=[Depends(verify_api_key), Depends(rate_limit)])
 async def delete_memory_cancel(req: DeleteRequest, request: Request):
     """撤销待确认的删除操作。"""
-    await check_rate_limit_async("/delete", request.headers.get("X-API-Key", "anonymous"))
     if not req.confirm_token:
         raise HTTPException(status_code=400, detail="confirm_token required")
     
@@ -931,7 +926,6 @@ async def update_memory(req: UpdateRequest, request: Request):
 
     安全链路：注入防御 → PII 脱敏 → 更新
     """
-    await check_rate_limit_async("/update", request.headers.get("X-API-Key", "anonymous"))
     from security.pipeline import redact_pii
     from security.injection_guard import validate_memory_content
 
@@ -1427,7 +1421,6 @@ async def unified_endpoint(req: UnifiedRequest, request: Request):
     """
     identity = _extract_identity(request)
     api_key = request.headers.get("X-API-Key", "anonymous")
-    await check_rate_limit_async("/api", api_key)
 
     action = req.action
     params = req.params

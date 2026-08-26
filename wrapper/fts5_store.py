@@ -42,28 +42,38 @@ class FTS5Store:
         metadata: str = "{}",
     ) -> None:
         now = time.time()
-        self._conn.execute(
-            "INSERT OR REPLACE INTO fts5_meta (memory_id, user_id, created_at) VALUES (?, ?, ?)",
-            (memory_id, user_id, now),
-        )
-        # FTS5 content 表用 INSERT OR REPLACE 需要先删后插
-        self._conn.execute(
-            "DELETE FROM fts5_memories WHERE memory_id = ?", (memory_id,)
-        )
-        self._conn.execute(
-            "INSERT INTO fts5_memories (memory_id, content, user_id) VALUES (?, ?, ?)",
-            (memory_id, content, user_id),
-        )
-        self._conn.commit()
+        try:
+            self._conn.execute("BEGIN")
+            self._conn.execute(
+                "INSERT OR REPLACE INTO fts5_meta (memory_id, user_id, created_at) VALUES (?, ?, ?)",
+                (memory_id, user_id, now),
+            )
+            # FTS5 content 表用 INSERT OR REPLACE 需要先删后插
+            self._conn.execute(
+                "DELETE FROM fts5_memories WHERE memory_id = ?", (memory_id,)
+            )
+            self._conn.execute(
+                "INSERT INTO fts5_memories (memory_id, content, user_id) VALUES (?, ?, ?)",
+                (memory_id, content, user_id),
+            )
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
 
     def delete(self, memory_id: str) -> None:
-        self._conn.execute(
-            "DELETE FROM fts5_memories WHERE memory_id = ?", (memory_id,)
-        )
-        self._conn.execute(
-            "DELETE FROM fts5_meta WHERE memory_id = ?", (memory_id,)
-        )
-        self._conn.commit()
+        try:
+            self._conn.execute("BEGIN")
+            self._conn.execute(
+                "DELETE FROM fts5_memories WHERE memory_id = ?", (memory_id,)
+            )
+            self._conn.execute(
+                "DELETE FROM fts5_meta WHERE memory_id = ?", (memory_id,)
+            )
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
 
     def search(
         self, query: str, user_id: str = "", limit: int = 20

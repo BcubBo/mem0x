@@ -16,45 +16,31 @@ logger = logging.getLogger("mem0x.version_tracker")
 
 _db_path: Optional[str] = None
 _lock = threading.Lock()
-_schema_checked = False
+_schema_checked = {"version_history": False}
 
-def _get_db_path() -> str:
-    global _db_path
-    if _db_path is None:
-        from security.utils import get_data_dir
-        _db_path = os.path.join(get_data_dir(), "version_history.db")
-    return _db_path
+# ── 数据库操作（使用 db_common 共享模块）──
+_VERSION_SCHEMA = [
+    """CREATE TABLE IF NOT EXISTS versions (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        memory_id   TEXT NOT NULL,
+        content     TEXT NOT NULL,
+        metadata    TEXT DEFAULT '{}',
+        version     INTEGER NOT NULL,
+        created_at  REAL NOT NULL,
+        reason      TEXT DEFAULT 'update'
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_ver_mem ON versions(memory_id, version)",
+]
+
 
 def _ensure_schema() -> None:
-    global _schema_checked
-    if _schema_checked:
-        return
-    with _lock:
-        if _schema_checked:
-            return
-        db_path = _get_db_path()
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        try:
-            conn = sqlite3.connect(db_path, timeout=10)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS versions (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    memory_id   TEXT NOT NULL,
-                    content     TEXT NOT NULL,
-                    metadata    TEXT DEFAULT '{}',
-                    version     INTEGER NOT NULL,
-                    created_at  REAL NOT NULL,
-                    reason      TEXT DEFAULT 'update'
-                )
-            """)
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_ver_mem ON versions(memory_id, version)"
-            )
-            conn.commit()
-            conn.close()
-            _schema_checked = True
-        except Exception as e:
-            logger.warning("version_tracker schema 初始化失败: %s", e)
+    from security.db_common import ensure_schema
+    ensure_schema("version_history", _VERSION_SCHEMA, _schema_checked)
+
+
+def _get_conn():
+    from security.db_common import get_db
+    return get_db("version_history")
 
 def save_version(
     memory_id: str,
@@ -66,7 +52,7 @@ def save_version(
     _ensure_schema()
     import json
 
-    conn = sqlite3.connect(_get_db_path(), timeout=10)
+    conn = _get_conn()
     try:
         # 查当前最大版本号
         row = conn.execute(
@@ -102,7 +88,7 @@ def get_versions(memory_id: str, limit: int = 20) -> List[Dict[str, Any]]:
     _ensure_schema()
     import json
 
-    conn = sqlite3.connect(_get_db_path(), timeout=10)
+    conn = _get_conn()
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(
@@ -135,7 +121,7 @@ def get_versions(memory_id: str, limit: int = 20) -> List[Dict[str, Any]]:
 def get_version_count(memory_id: str) -> int:
     """查询记忆的版本总数。"""
     _ensure_schema()
-    conn = sqlite3.connect(_get_db_path(), timeout=10)
+    conn = _get_conn()
     try:
         row = conn.execute(
             "SELECT COUNT(*) FROM versions WHERE memory_id=?",
@@ -151,7 +137,7 @@ def get_version_count(memory_id: str) -> int:
 def get_total_versions() -> int:
     """查询所有记忆的版本总数。"""
     _ensure_schema()
-    conn = sqlite3.connect(_get_db_path(), timeout=10)
+    conn = _get_conn()
     try:
         row = conn.execute("SELECT COUNT(*) FROM versions").fetchone()
         return row[0] if row else 0
@@ -165,7 +151,7 @@ def get_version_content(memory_id: str, version: int) -> Optional[Dict[str, Any]
     """获取指定版本的内容。"""
     _ensure_schema()
     import json
-    conn = sqlite3.connect(_get_db_path(), timeout=10)
+    conn = _get_conn()
     conn.row_factory = sqlite3.Row
     try:
         row = conn.execute(
@@ -191,7 +177,7 @@ def get_version_content(memory_id: str, version: int) -> Optional[Dict[str, Any]
 def cleanup(memory_id: str) -> int:
     """删除指定记忆的所有版本历史，返回删除条数。"""
     _ensure_schema()
-    conn = sqlite3.connect(_get_db_path(), timeout=10)
+    conn = _get_conn()
     try:
         cursor = conn.execute(
             "DELETE FROM versions WHERE memory_id=?",

@@ -27,44 +27,29 @@ _schema_checked = False
 _schema_lock = threading.Lock()
 
 
-def _get_db_path() -> str:
-    from security.utils import get_data_dir
-    return os.path.join(get_data_dir(), "salience.db")
-
-
-def _get_db() -> sqlite3.Connection:
-    db_path = _get_db_path()
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    conn = sqlite3.connect(db_path, timeout=10)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.row_factory = sqlite3.Row
-    return conn
+# ── 数据库操作（使用 db_common 共享模块）──
+_SALIENCE_SCHEMA = [
+    """CREATE TABLE IF NOT EXISTS salience (
+        memory_id      TEXT PRIMARY KEY,
+        salience       REAL NOT NULL DEFAULT 0.5,
+        last_access    REAL NOT NULL,
+        access_count   INTEGER NOT NULL DEFAULT 0,
+        created_at     REAL NOT NULL,
+        content_preview TEXT DEFAULT ''
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_sal_mem ON salience(memory_id)",
+]
+_schema_checked = {"salience": False}
 
 
 def _ensure_schema() -> None:
-    global _schema_checked
-    with _schema_lock:
-        if _schema_checked:
-            return
-        conn = _get_db()
-        try:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS salience (
-                    memory_id      TEXT PRIMARY KEY,
-                    salience       REAL NOT NULL DEFAULT 0.5,
-                    last_access    REAL NOT NULL,
-                    access_count   INTEGER NOT NULL DEFAULT 0,
-                    created_at     REAL NOT NULL,
-                    content_preview TEXT DEFAULT ''
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_sal_mem ON salience(memory_id)")
-            conn.commit()
-            _schema_checked = True
-        except Exception as e:
-            logger.warning("salience 表初始化失败: %s", e)
-        finally:
-            conn.close()
+    from security.db_common import ensure_schema
+    ensure_schema("salience", _SALIENCE_SCHEMA, _schema_checked)
+
+
+def _get_db():
+    from security.db_common import get_db
+    return get_db("salience")
 
 
 def _get_config() -> dict:

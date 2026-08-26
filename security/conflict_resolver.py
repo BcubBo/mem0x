@@ -391,15 +391,20 @@ def _entity_matches(old_text: str, new_text: str) -> bool:
     return False
 
 
-# ── SQLite 账本（从 config 读路径） ──
-def _get_db_path() -> str:
-    from .utils import get_data_dir
-    return os.path.join(get_data_dir(), "conflict.db")
-
-_schema_checked = False
-_schema_retry_count = 0
-_MAX_SCHEMA_RETRIES = 3
-_schema_lock = threading.Lock()
+# ── SQLite 账本（使用 db_common 共享模块）──
+_CONFLICT_SCHEMA = [
+    """CREATE TABLE IF NOT EXISTS conflict_events (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        memory_id   TEXT NOT NULL,
+        old_content TEXT NOT NULL,
+        new_content TEXT NOT NULL,
+        reason      TEXT NOT NULL,
+        rule_type   TEXT NOT NULL,
+        created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_cf_memory ON conflict_events(memory_id)",
+]
+_schema_checked = {"conflict": False}
 
 
 def _get_user_id() -> str:
@@ -410,45 +415,14 @@ USER_ID = _get_user_id()
 AGENT_ID = os.environ.get("MEM0_AGENT_ID", "hermes")
 
 
-def _get_db() -> sqlite3.Connection:
-    db_path = _get_db_path()
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    conn = sqlite3.connect(db_path, timeout=10)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
 def _ensure_schema() -> None:
-    global _schema_checked, _schema_retry_count
-    if _schema_checked:
-        return
-    if _schema_retry_count >= _MAX_SCHEMA_RETRIES:
-        return
-    with _schema_lock:
-        if _schema_checked:
-            return
-        conn = _get_db()
-        try:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS conflict_events (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    memory_id   TEXT NOT NULL,
-                    old_content TEXT NOT NULL,
-                    new_content TEXT NOT NULL,
-                    reason      TEXT NOT NULL,
-                    rule_type   TEXT NOT NULL,
-                    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_cf_memory ON conflict_events(memory_id)")
-            conn.commit()
-            _schema_checked = True
-        except Exception as e:
-            _schema_retry_count += 1
-            logger.warning(f"conflict_events 表初始化失败 (retry {_schema_retry_count}/{_MAX_SCHEMA_RETRIES}): {e}")
-        finally:
-            conn.close()
+    from security.db_common import ensure_schema
+    ensure_schema("conflict", _CONFLICT_SCHEMA, _schema_checked)
+
+
+def _get_db():
+    from security.db_common import get_db
+    return get_db("conflict")
 
 
 def _log_conflict(memory_id: str, old_content: str, new_content: str, reason: str, rule_type: str) -> None:

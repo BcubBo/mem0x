@@ -428,8 +428,10 @@ async def find_merge_groups(
         filters["agent_id"] = agent_id
 
     try:
-        from wrapper.fetch_all import fetch_all_memories
-        items = await fetch_all_memories(memory, filters=filters, max_items=top_k)
+        from wrapper.fetch_all import iter_batches
+        items = []
+        async for batch in iter_batches(memory, filters=filters, batch_size=200, max_items=top_k):
+            items.extend(batch)
     except Exception as e:
         logger.error("fetch_all 失败，fallback get_all: %s", e)
         try:

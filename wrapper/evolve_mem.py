@@ -86,63 +86,56 @@ async def analyze_memory_quality(memory, user_id: str = "bo", agent_id: str = "h
         if agent_id:
             filters["agent_id"] = agent_id
 
-        # 获取全量记忆（游标分页，绕过 mem0 get_all 限制）
+        # 分批获取全量记忆（不一次性加载到内存）
         try:
-            from wrapper.fetch_all import fetch_all_memories
-            items = await asyncio.wait_for(
-                fetch_all_memories(memory, filters=filters, max_items=500),
-                timeout=60,
-            )
+            from wrapper.fetch_all import iter_batches
+            total = 0
+            async for batch in iter_batches(memory, filters=filters, batch_size=200, max_items=0):
+                for item in batch:
+                    text = item.get("memory", "")
+                    metadata = item.get("metadata") or {}
+                    created_at = item.get("created_at")
+
+                    # FSRS 质量评估（标准 FSRS-6）
+                    access_count = metadata.get("access_count", 0) if isinstance(metadata.get("access_count"), (int, float)) else 0
+                    Q = get_quality_score(metadata, created_at, access_count)
+                    D = text_density(text)
+
+                    stats["quality_scores"].append(Q)
+
+                    # 统计 lane 分布
+                    lane_match = re.search(r"\[lane:(\w+)\]", text)
+                    lane = lane_match.group(1) if lane_match else "none"
+                    stats["by_lane"][lane] = stats["by_lane"].get(lane, 0) + 1
+
+                    # 质量分类
+                    if Q >= THRESHOLD_HIGH:
+                        stats["high_quality"] += 1
+                    elif Q >= THRESHOLD_LOW:
+                        stats["medium_quality"] += 1
+                    else:
+                        stats["low_quality"] += 1
+
+                    # 过期检测
+                    if created_at:
+                        try:
+                            created = datetime.fromisoformat(created_at)
+                            if created.tzinfo is None:
+                                created = created.replace(tzinfo=timezone.utc)
+                            if (datetime.now(timezone.utc) - created).days > 365:
+                                stats["stale"] += 1
+                        except Exception:
+                            pass
+
+                total += len(batch)
+                stats["total"] = total
+                logger.debug("evolve_mem: 已处理 %d 条", total)
         except asyncio.TimeoutError:
             logger.warning("evolve_mem: fetch_all 超时")
             return {"total": 0, "pruned": 0, "error": "timeout"}
         except Exception as e:
-            logger.warning("evolve_mem: fetch_all 失败，fallback get_all: %s", e)
-            result = await memory.get_all(filters=filters, top_k=500)
-            items = result.get("results", []) if isinstance(result, dict) else []
-
-        stats["total"] = len(items)
-        now = datetime.now(timezone.utc)
-
-        for item in items:
-            text = item.get("memory", "")
-            metadata = item.get("metadata") or {}
-            created_at = item.get("created_at")
-
-            # 计算经过天数
-            age_days = 0.5  # 默认值
-            if created_at:
-                try:
-                    created = datetime.fromisoformat(created_at)
-                    if created.tzinfo is None:
-                        created = created.replace(tzinfo=timezone.utc)
-                    age_days = max((now - created).days, 0)
-                except Exception:
-                    pass
-
-            # FSRS 质量评估（标准 FSRS-6）
-            access_count = metadata.get("access_count", 0) if isinstance(metadata.get("access_count"), (int, float)) else 0
-            Q = get_quality_score(metadata, created_at, access_count)
-            D = text_density(text)
-
-            stats["quality_scores"].append(Q)
-
-            # 统计 lane 分布
-            lane_match = re.search(r"\[lane:(\w+)\]", text)
-            lane = lane_match.group(1) if lane_match else "none"
-            stats["by_lane"][lane] = stats["by_lane"].get(lane, 0) + 1
-
-            # 质量分类
-            if Q >= THRESHOLD_HIGH:
-                stats["high_quality"] += 1
-            elif Q < THRESHOLD_LOW:
-                stats["low_quality"] += 1
-            else:
-                stats["medium_quality"] += 1
-
-            # 过期判断（90天以上且质量低）
-            if age_days > 90 and Q < THRESHOLD_LOW:
-                stats["stale"] += 1
+            logger.warning("evolve_mem: fetch_all 失败: %s", e)
+            return {"total": 0, "pruned": 0, "error": str(e)}
 
         # 计算统计信息
         if stats["quality_scores"]:
@@ -180,75 +173,40 @@ async def run_evolve_cycle(memory, neo4j_hook=None, user_id: str = "bo",
 
             # 获取全量记忆（游标分页）
             try:
-                from wrapper.fetch_all import fetch_all_memories
-                items = await asyncio.wait_for(
-                    fetch_all_memories(memory, filters=filters, max_items=500),
-                    timeout=60,
-                )
-            except asyncio.TimeoutError:
-                logger.warning("evolve_mem: 清理阶段 fetch_all 超时")
-                return {"total": 0, "pruned": 0, "error": "timeout"}
-            except Exception as e:
-                logger.warning("evolve_mem: fetch_all 失败，fallback get_all: %s", e)
-                result = await memory.get_all(filters=filters, top_k=500)
-                items = result.get("results", []) if isinstance(result, dict) else []
-
-            THRESHOLD_LOW = 0.4
-            from wrapper.fsrs_bridge import get_quality_score as _get_quality_score
-
-            def text_density(text: str) -> float:
-                import re
-                entities = re.findall(r'[A-Z][a-z]+|\d+|[\u4e00-\u9fff]{2,}', text)
-                entity_density = min(len(entities) / max(len(text), 1) * 10, 1.0)
-                keywords = ['mem0', 'Qdrant', 'Neo4j', 'Docker', 'API', 'plugin', 'config',
-                            '插件', '配置', '测试', '部署', '修复', '优化']
-                keyword_count = sum(1 for kw in keywords if kw.lower() in text.lower())
-                keyword_density = min(keyword_count / 5, 1.0)
-                return min(entity_density * 0.6 + keyword_density * 0.4, 1.0)
-
-            from datetime import datetime, timezone
-            now = datetime.now(timezone.utc)
-
-            for item in items:
-                metadata = item.get("metadata") or {}
-                text = item.get("memory", "")
-                created_at = item.get("created_at")
-                mem_id = item.get("id")
-
-                if not mem_id or mem_id.startswith("neo4j:"):
-                    continue
-
-                # 计算经过天数
-                age_days = 0.5
-                if created_at:
-                    try:
-                        created = datetime.fromisoformat(created_at)
-                        if created.tzinfo is None:
-                            created = created.replace(tzinfo=timezone.utc)
-                        age_days = max((datetime.now(timezone.utc) - created).days, 0)
-                    except Exception:
-                        pass
-
-                # FSRS 质量评估（标准 FSRS-6）
-                access_count = metadata.get("access_count", 0) if isinstance(metadata.get("access_count"), (int, float)) else 0
-                Q = _get_quality_score(metadata, created_at, access_count)
-                D = text_density(text)
-
-                # 使用更保守的阈值：threshold_low - 0.1，只清理最极端的低质记忆
+                from wrapper.fetch_all import iter_batches
+                THRESHOLD_LOW = 0.4
+                from wrapper.fsrs_bridge import get_quality_score as _get_quality_score
                 prune_threshold = max(THRESHOLD_LOW - 0.1, 0.2)
-                if Q < prune_threshold and not is_core_memory(mem_id):
-                    try:
-                        await memory.delete(mem_id)
-                        result["pruned"] += 1
 
-                        if neo4j_hook and neo4j_hook.enabled:
+                async for batch in iter_batches(memory, filters=filters, batch_size=200, max_items=0):
+                    for item in batch:
+                        metadata = item.get("metadata") or {}
+                        text = item.get("memory", "")
+                        created_at = item.get("created_at")
+                        mem_id = item.get("id")
+
+                        if not mem_id or mem_id.startswith("neo4j:"):
+                            continue
+
+                        # FSRS 质量评估
+                        access_count = metadata.get("access_count", 0) if isinstance(metadata.get("access_count"), (int, float)) else 0
+                        Q = _get_quality_score(metadata, created_at, access_count)
+
+                        if Q < prune_threshold and not is_core_memory(mem_id):
                             try:
-                                neo4j_hook.cleanup(mem_id)
-                            except Exception:
-                                pass
-
-                    except Exception as e:
-                        logger.debug("清理失败 %s: %s", mem_id[:16], e)
+                                await memory.delete(mem_id)
+                                result["pruned"] += 1
+                                if neo4j_hook and neo4j_hook.enabled:
+                                    try:
+                                        neo4j_hook.cleanup(mem_id)
+                                    except Exception:
+                                        pass
+                            except Exception as e:
+                                logger.debug("清理失败 %s: %s", mem_id[:16], e)
+            except asyncio.TimeoutError:
+                logger.warning("evolve_mem: 清理阶段超时")
+            except Exception as e:
+                logger.warning("evolve_mem: 清理阶段失败: %s", e)
 
         # 3. 记录进化日志
         if result["pruned"] > 0:

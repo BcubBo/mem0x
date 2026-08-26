@@ -8,3 +8,4 @@ requests>=2.31.0
 fastembed
 spacy
 redis>=5.0.0
+fsrs>=6.0.0

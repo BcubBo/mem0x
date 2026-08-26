@@ -442,7 +442,8 @@ async def find_merge_groups(
     if len(items) < MIN_GROUP_SIZE:
         return []
 
-    # 2. 过滤已归档 + 太短的
+    # 2. 过滤已归档 + 太短的 + 核心记忆
+    from wrapper.core_memory import is_core_memory
     archived_ids = _get_archived_ids()
     candidates = []
     for item in items:
@@ -454,6 +455,8 @@ async def find_merge_groups(
             continue
         if len(text) < MIN_MEMORY_LENGTH:
             continue
+        if is_core_memory(mid):
+            continue  # 跳过核心记忆
         # 跳过 metadata.archived=true 的（矛盾消解归档的）
         meta = item.get("metadata") or {}
         if meta.get("archived") or meta.get("deleted_at"):
@@ -601,6 +604,12 @@ async def run_consolidation_cycle(
 
             # 记录合并历史
             _record_merge(new_id, source_ids, merged_text)
+            # 写入 Neo4j（新合并记忆的知识图谱）
+            if neo4j_hook and neo4j_hook.enabled:
+                try:
+                    neo4j_hook.write(new_id, merged_text)
+                except Exception as e:
+                    logger.debug("Neo4j 合并写入失败 %s: %s", new_id[:8], e)
             merged_count += 1
             logger.info("✓ 合并完成: %d 条 → %s", len(source_ids), new_id[:8])
 
@@ -617,8 +626,9 @@ async def run_consolidation_cycle(
 # ═══════════════════════════════════════════════════════
 
 def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
-    """后台循环线程。"""
+    """后台循环线程（使用共享锁防止与 evolve_mem 并发）。"""
     global _running
+    from wrapper.evolve_lock import background_tasks_lock
     logger.info("consolidation v2 后台线程启动，间隔 %ds", interval)
 
     from wrapper.neo4j_hook import get_hook
@@ -630,11 +640,19 @@ def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
 
     while _running:
         try:
-            memory = memory_getter()
-            if memory:
-                merged = asyncio.run(run_consolidation_cycle(memory, neo4j_hook=neo4j_hook))
-                if merged > 0:
-                    logger.info("本轮整合 %d 条记忆", merged)
+            # 获取共享锁，防止与 evolve_mem 并发
+            if not background_tasks_lock.acquire(timeout=5):
+                logger.debug("consolidation: 等待共享锁超时，跳过本轮")
+                time.sleep(interval)
+                continue
+            try:
+                memory = memory_getter()
+                if memory:
+                    merged = asyncio.run(run_consolidation_cycle(memory, neo4j_hook=neo4j_hook))
+                    if merged > 0:
+                        logger.info("本轮整合 %d 条记忆", merged)
+            finally:
+                background_tasks_lock.release()
         except Exception as e:
             logger.error("consolidation 循环异常: %s", e)
 

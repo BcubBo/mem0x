@@ -44,28 +44,12 @@ async def analyze_memory_quality(memory, user_id: str = "bo", agent_id: str = "h
     - entity_density: 实体密度（数字、英文、专有名词）
     - keyword_density: 关键词密度（技术术语）
 
-    质量分数：Q = 0.5*R + 0.3*D + 0.2*min(S/10, 1)
+    质量分数：使用标准 FSRS-6 算法（wrapper/fsrs_bridge.py）
     ============================================================
     """
-    import math
     import re
     from datetime import datetime, timezone
-
-    # FSRS 参数
-    FACTORS = 0.9
-    DECAY = -1
-
-    def fsrs_retrievability(elapsed_days: float, stability: float) -> float:
-        """FSRS 遗忘曲线：R(t, S) = (1 + factor * t/S)^(-1)"""
-        if stability <= 0:
-            return 0.0
-        return (1 + FACTORS * elapsed_days / stability) ** DECAY
-
-    def fsrs_stability(search_count: int, update_count: int, age_days: float) -> float:
-        """FSRS 稳定性：S = (1 + search_count * 0.5 + update_count * 0.3) * (1 + age_days/30)"""
-        base = 1 + search_count * 0.5 + update_count * 0.3
-        time_factor = 1 + age_days / 30
-        return base * time_factor
+    from wrapper.fsrs_bridge import compute_retrievability, get_quality_score, card_from_metadata
 
     def text_density(text: str) -> float:
         """文本信息密度：实体密度 + 关键词密度"""
@@ -136,20 +120,10 @@ async def analyze_memory_quality(memory, user_id: str = "bo", agent_id: str = "h
                 except Exception:
                     pass
 
-            # 获取使用维度
-            search_count = metadata.get("search_count", 0) if isinstance(metadata.get("search_count"), (int, float)) else 0
-            update_count = metadata.get("update_count", 0) if isinstance(metadata.get("update_count"), (int, float)) else 0
-
-            # FSRS 计算
-            S = fsrs_stability(search_count, update_count, age_days)
-            R = fsrs_retrievability(age_days, S)
-
-            # 文本密度
+            # FSRS 质量评估（标准 FSRS-6）
+            access_count = metadata.get("access_count", 0) if isinstance(metadata.get("access_count"), (int, float)) else 0
+            Q = get_quality_score(metadata, created_at, access_count)
             D = text_density(text)
-
-            # 质量分数 Q = 0.5*R + 0.3*D + 0.2*min(S/10, 1)
-            Q = 0.5 * R + 0.3 * D + 0.2 * min(S / 10, 1.0)
-            Q = round(Q, 4)
 
             stats["quality_scores"].append(Q)
 
@@ -219,20 +193,8 @@ async def run_evolve_cycle(memory, neo4j_hook=None, user_id: str = "bo",
                 result = await memory.get_all(filters=filters, top_k=500)
                 items = result.get("results", []) if isinstance(result, dict) else []
 
-            # FSRS 参数
-            FACTORS = 0.9
-            DECAY = -1
             THRESHOLD_LOW = 0.4
-
-            def fsrs_retrievability(elapsed_days: float, stability: float) -> float:
-                if stability <= 0:
-                    return 0.0
-                return (1 + FACTORS * elapsed_days / stability) ** DECAY
-
-            def fsrs_stability(search_count: int, update_count: int, age_days: float) -> float:
-                base = 1 + search_count * 0.5 + update_count * 0.3
-                time_factor = 1 + age_days / 30
-                return base * time_factor
+            from wrapper.fsrs_bridge import get_quality_score as _get_quality_score
 
             def text_density(text: str) -> float:
                 import re
@@ -267,15 +229,10 @@ async def run_evolve_cycle(memory, neo4j_hook=None, user_id: str = "bo",
                     except Exception:
                         pass
 
-                # 获取使用维度
-                search_count = metadata.get("search_count", 0) if isinstance(metadata.get("search_count"), (int, float)) else 0
-                update_count = metadata.get("update_count", 0) if isinstance(metadata.get("update_count"), (int, float)) else 0
-
-                # 计算质量分数
-                S = fsrs_stability(search_count, update_count, age_days)
-                R = fsrs_retrievability(age_days, S)
+                # FSRS 质量评估（标准 FSRS-6）
+                access_count = metadata.get("access_count", 0) if isinstance(metadata.get("access_count"), (int, float)) else 0
+                Q = _get_quality_score(metadata, created_at, access_count)
                 D = text_density(text)
-                Q = 0.5 * R + 0.3 * D + 0.2 * min(S / 10, 1.0)
 
                 # 使用更保守的阈值：threshold_low - 0.1，只清理最极端的低质记忆
                 prune_threshold = max(THRESHOLD_LOW - 0.1, 0.2)
@@ -317,11 +274,20 @@ def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
 
     while _running:
         try:
-            memory = memory_getter()
-            if memory:
-                result = asyncio.run(run_evolve_cycle(memory, neo4j_hook=neo4j_hook))
-                if result["pruned"] > 0:
-                    logger.info("本轮自进化: 清理 %d 条", result["pruned"])
+            # 获取共享锁，防止与 consolidation 并发
+            from wrapper.evolve_lock import background_tasks_lock
+            if not background_tasks_lock.acquire(timeout=5):
+                logger.debug("evolve_mem: 等待共享锁超时，跳过本轮")
+                time.sleep(interval)
+                continue
+            try:
+                memory = memory_getter()
+                if memory:
+                    result = asyncio.run(run_evolve_cycle(memory, neo4j_hook=neo4j_hook))
+                    if result["pruned"] > 0:
+                        logger.info("本轮自进化: 清理 %d 条", result["pruned"])
+            finally:
+                background_tasks_lock.release()
         except Exception as e:
             logger.error("evolve_mem 循环异常: %s", e)
 

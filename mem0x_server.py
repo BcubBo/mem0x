@@ -241,8 +241,23 @@ _DELETE_CONFIRM_TTL = 300  # 5分钟有效期
 # 否则每个 worker 各自生成不同 secret，token 跨 worker 不互通
 _delete_secret_raw = os.environ.get("MEM0X_DELETE_SECRET")
 if not _delete_secret_raw:
-    logger.warning("MEM0X_DELETE_SECRET 未设置，自动生成（多 worker 场景请显式配置）")
-    _delete_secret_raw = secrets.token_hex(16)
+    # 尝试从文件加载（持久化，重启不丢失）
+    _secret_file = os.path.join(
+        os.environ.get("MEM0X_DATA_DIR", "data"), ".delete_secret"
+    )
+    try:
+        if os.path.exists(_secret_file):
+            with open(_secret_file, "r") as f:
+                _delete_secret_raw = f.read().strip()
+        else:
+            _delete_secret_raw = secrets.token_hex(16)
+            os.makedirs(os.path.dirname(_secret_file), exist_ok=True)
+            with open(_secret_file, "w") as f:
+                f.write(_delete_secret_raw)
+            logger.info("MEM0X_DELETE_SECRET 已生成并持久化到 %s", _secret_file)
+    except Exception as e:
+        logger.warning("DELETE_SECRET 持久化失败，回退随机生成: %s", e)
+        _delete_secret_raw = secrets.token_hex(16)
 _DELETE_SECRET: str = _delete_secret_raw
 _pending_deletions: dict[str, dict] = {}  # {token: {memory_id, expires_at, user_id, used}}
 _pending_deletions_lock = threading.Lock()
@@ -775,6 +790,11 @@ async def search_memory(req: SearchRequest, request: Request):
 
     elapsed_ms = int((time.time() - start) * 1000)
     logger.info("🔍 search: query=%s, results=%d, elapsed=%dms", req.query[:50], len(results), elapsed_ms)
+    # 召回侧注入边界：给每个 memory 加标记，防止存储型 prompt 注入
+    for r in results:
+        mem = r.get("memory")
+        if mem and not mem.startswith("[MEMORY-DATA]"):
+            r["memory"] = f"[MEMORY-DATA]{mem}[/MEMORY-DATA]"
     return {
         "results": results,
         "count": len(results),

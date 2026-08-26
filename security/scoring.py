@@ -91,12 +91,14 @@ def _extract_timestamp(item: dict) -> float:
     return 0.0
 
 
-def _compute_time_decay(created_ts: float, now_ts: Optional[float] = None) -> float:
+def _compute_time_decay(created_ts: float, now_ts: Optional[float] = None,
+                        recency_lambda: Optional[float] = None) -> float:
     if created_ts <= 0:
         return 0.5
     now = now_ts or time.time()
     age_days = max(0.0, (now - created_ts) / 86400.0)
-    return round(math.exp(-RECENCY_LAMBDA * age_days), 4)
+    lam = recency_lambda if recency_lambda is not None else RECENCY_LAMBDA
+    return round(math.exp(-lam * age_days), 4)
 
 
 def _compute_confidence(created_ts: float, access_count: float = 0,
@@ -136,14 +138,12 @@ def score_and_rank(
     cfg_weights = (config or {}).get("scoring", {}).get("weights", {})
     w = {**DEFAULT_WEIGHTS, **cfg_weights, **(weights or {})}
 
-    # 从 config 读取 recency_lambda
-    global RECENCY_LAMBDA
+    # 从 config 读取 recency_lambda（不修改全局变量，线程安全）
     cfg_lambda = (config or {}).get("scoring", {}).get("recency_lambda")
-    if cfg_lambda is not None:
-        try:
-            RECENCY_LAMBDA = float(cfg_lambda)
-        except (ValueError, TypeError):
-            pass
+    try:
+        _lam = float(cfg_lambda) if cfg_lambda is not None else None
+    except (ValueError, TypeError):
+        _lam = None
     now_ts = time.time()
     is_fact_query = bool(_FACT_KEYWORDS.search(query))
 
@@ -167,7 +167,7 @@ def score_and_rank(
 
         # 时间衰减分
         created_ts = _extract_timestamp(item)
-        time_s = _compute_time_decay(created_ts, now_ts)
+        time_s = _compute_time_decay(created_ts, now_ts, recency_lambda=_lam)
 
         # 可靠性分（从 metadata 或默认 0.5）
         try:

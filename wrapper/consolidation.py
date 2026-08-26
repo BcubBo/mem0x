@@ -63,24 +63,38 @@ def _get_redis():
         return None
 
 
-def _get_cursor() -> int:
-    """从 Redis 读取候选游标（0=默认）。"""
+def _get_cursor(user_id: str = "bo") -> dict:
+    """从 Redis 读取该用户的 consolidation 游标状态。
+
+    返回 {"offset": int, "last_run": str, "total_rounds": int}
+    """
     r = _get_redis()
     if r:
         try:
-            val = r.get("consolidation:cursor")
-            return int(val) if val else 0
+            import json
+            val = r.get(f"consolidation:cursor:{user_id}")
+            if val:
+                return json.loads(val)
         except Exception:
             pass
-    return 0
+    return {"offset": 0, "last_run": None, "total_rounds": 0}
 
 
-def _set_cursor(val: int):
-    """将候选游标写入 Redis。"""
+def _set_cursor(user_id: str, offset: int, total_candidates: int):
+    """将 consolidation 游标写入 Redis（含时间戳和轮次）。"""
+    import json
+    from datetime import datetime, timezone
     r = _get_redis()
     if r:
         try:
-            r.set("consolidation:cursor", str(val), ex=86400 * 7)  # 7天过期
+            old = _get_cursor(user_id)
+            state = {
+                "offset": offset,
+                "last_run": datetime.now(timezone.utc).isoformat(),
+                "total_rounds": old.get("total_rounds", 0) + 1,
+                "total_candidates": total_candidates,
+            }
+            r.set(f"consolidation:cursor:{user_id}", json.dumps(state), ex=86400 * 30)
         except Exception:
             pass
 
@@ -509,19 +523,19 @@ async def find_merge_groups(
     MAX_CANDIDATES = 2000
     original_count = len(candidates)
     if original_count > MAX_CANDIDATES:
-        # 从 Redis 游标位置开始
-        cursor = _get_cursor()
-        start = cursor % original_count
+        state = _get_cursor(user_id)
+        start = state["offset"] % original_count
         end = start + MAX_CANDIDATES
         if end <= original_count:
             candidates = candidates[start:end]
         else:
             candidates = candidates[start:] + candidates[:end - original_count]
-        _set_cursor(end % original_count)
-        logger.info("consolidation: 候选 %d 条，从偏移 %d 取 %d 条（游标→%d）",
-                    len(items), start, len(candidates), end % original_count)
+        _set_cursor(user_id, end % original_count, original_count)
+        logger.info("consolidation: 候选 %d 条，从偏移 %d 取 %d 条（轮次%d，游标→%d）",
+                    len(items), start, len(candidates),
+                    state.get("total_rounds", 0) + 1, end % original_count)
     else:
-        _set_cursor(0)
+        _set_cursor(user_id, 0, original_count)
 
     logger.info("consolidation: %d 候选记忆（总 %d，归档跳过 %d）",
                 len(candidates), len(items), len(items) - len(candidates))

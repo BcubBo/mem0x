@@ -22,22 +22,40 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger("mem0x.consolidation")
 
-# ── 配置 ──────────────────────────────────────────────
+# ── 配置（从 config-compose.json 读取，带默认值）──────────────
+def _load_config():
+    """加载 consolidation 配置。"""
+    try:
+        from wrapper.mem0_runtime import load_config
+        config = load_config()
+        return config.get("consolidation", {}).get("cursor", {})
+    except Exception:
+        return {}
+
+_cfg = _load_config()
+
 # 向量相似度阈值（余弦相似度，高于此值视为可合并）
-VECTOR_SIM_THRESHOLD = 0.82
+VECTOR_SIM_THRESHOLD = _cfg.get("vector_sim_threshold", 0.82)
 
 # Jaccard 文本相似度阈值（双重验证）
-JACCARD_THRESHOLD = 0.45
+JACCARD_THRESHOLD = _cfg.get("jaccard_threshold", 0.45)
 
 # 最小/最大合并组大小
 MIN_GROUP_SIZE = 2
 MAX_GROUP_SIZE = 8
 
 # 每轮最大合并数（防止一次处理太多）
-MAX_MERGES_PER_CYCLE = 5
+MAX_MERGES_PER_CYCLE = _cfg.get("max_merges_per_cycle", 5)
 
 # 后台扫描间隔（秒）
-DEFAULT_INTERVAL = 7200  # 2小时
+DEFAULT_INTERVAL = _cfg.get("interval", 7200)  # 2小时
+
+# 候选池上限（O(n²) 复杂度，超过此值用游标分批）
+MAX_CANDIDATES = _cfg.get("max_candidates", 2000)
+
+# 合并阈值
+EXACT_DUP_THRESHOLD = _cfg.get("exact_dup_threshold", 0.95)
+NEAR_DUP_THRESHOLD = _cfg.get("near_dup_threshold", 0.88)
 
 # 记忆最小长度（太短的不合并）
 MIN_MEMORY_LENGTH = 15
@@ -735,7 +753,7 @@ async def run_consolidation_cycle(
                         len(memories), avg_cosine, source_texts[0][:50])
 
             # 按相似度分层选择合并策略
-            if avg_cosine >= 0.95:
+            if avg_cosine >= EXACT_DUP_THRESHOLD:
                 # Exact Dup：选最佳记忆，不调 LLM
                 merged_text = _pick_best_memory(memories)
                 strategy = "pick_best"

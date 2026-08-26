@@ -16,8 +16,23 @@ from typing import Optional, Dict, List
 
 logger = logging.getLogger("mem0x.evolve_mem")
 
+# ── 配置（从 config-compose.json 读取）──────────────
+def _load_config():
+    try:
+        from wrapper.mem0_runtime import load_config
+        config = load_config()
+        return config.get("evolve_mem", {})
+    except Exception:
+        return {}
+
+_cfg = _load_config()
+
 # 后台扫描间隔（秒）
-DEFAULT_INTERVAL = 14400  # 4小时
+DEFAULT_INTERVAL = _cfg.get("interval", 14400)  # 默认4小时
+
+# 质量阈值
+THRESHOLD_HIGH = _cfg.get("threshold_high", 0.7)
+THRESHOLD_LOW = _cfg.get("threshold_low", 0.3)
 
 # 全局状态
 _running = False

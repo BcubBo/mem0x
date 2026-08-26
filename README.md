@@ -9,25 +9,40 @@
 ```
 Hermes Agent (插件层) → mem0x API (HTTP) → Qdrant (向量存储) + Neo4j (知识图谱)
                                          ↓
-                                    Redis (速率限制)
+                                    Redis (速率限制 + 游标持久化)
+                                         ↓
+                                    SQLite (FTS5全文索引 + salience + version_tracker)
 ```
 
 ### 核心组件
 
 | 组件 | 说明 |
 |------|------|
-| `mem0x_server.py` | FastAPI 主服务，暴露 `/add` `/search` `/update` `/delete` 端点 |
+| `mem0x_server.py` | FastAPI 主服务，暴露 `/api` `/evolve` `/consolidate` 端点 |
 | `security/pipeline.py` | 安全写入链路：注入防御 → PII脱敏 → 去重 → 矛盾消解 → 语义判重 |
 | `security/conflict_resolver.py` | 矛盾消解：规则驱动 + LLM 并行投票 |
-| `security/dedup.py` | Jaccard 去重 + 语义判重 |
-| `security/injection_guard.py` | 注入防御（L1正则 + L2归一化） |
-| `wrapper/` | mem0 异步封装、consolidation、evolve 等扩展 |
+| `security/compensation.py` | 补偿队列：写入失败自动重试，SQLite 持久化 |
+| `security/circuit_breaker.py` | 断路器：Qdrant/Neo4j/LLM 故障隔离 |
+| `wrapper/fetch_all.py` | 分页获取 + 多用户发现（绕过 mem0 get_all 限制） |
+| `wrapper/index_sync.py` | 跨存储同步：Qdrant → FTS5/salience/version_tracker |
+| `wrapper/fsrs_bridge.py` | FSRS-6 质量评估：标准间隔重复算法 |
+| `wrapper/consolidation.py` | 碎片合并：无 LLM 算法（pick_best/keyword_merge） |
+| `wrapper/evolve_mem.py` | 自进化：质量分析 + 低质清理 |
+| `wrapper/auto_expire.py` | 过期清理：lane TTL + expires 标记 |
 
 ## 版本历史
 
-### v0.1.18.1 (2026-08-25)
-- 修复 `/update` 端点缺少 `request: Request` 参数导致的 NameError
-- 搜索端点日志增强：打印解析后的 user_id 和请求体
+### v0.1.27 (2026-08-26)
+- **IndexSync 跨存储同步**：删除/合并记忆后自动同步 FTS5/salience
+- **consolidation 无 LLM 算法**：cosine≥0.95 选最佳、0.88-0.95 关键词拼接
+- **Redis 游标持久化**：consolidation 候选池游标存 Redis，重启不丢失
+- **多用户分批处理**：按 user_id 循环，覆盖所有用户
+- **分页获取**：iter_batches 生成器模式，不一次性加载全量
+- **配置化**：阈值/间隔/候选数全部从 config-compose.json 读取
+- **P0 修复**：compensation 精确清理、断路器 HALF_OPEN 回退
+- **P1 修复**：facet API 字段名、auto_expire 共享锁、局部变量遮蔽
+- **FSRS 兼容**：旧记忆用 age-based 基线分数，不再误清理
+- **pytest 测试套件**：6 项基础测试全部通过
 - consolidation/evolve 异步修复：`memory.add()`/`memory.delete()` 加 await
 
 ### v0.1.17.3 (2026-08-24)

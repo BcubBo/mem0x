@@ -51,7 +51,8 @@
       "bm25": 0.25,
       "time": 0.15,
       "reliability": 0.1,
-      "heat": 0.15
+      "heat": 0.15,
+      "confidence": 0.1
     },
     "recency_lambda": 0.05,
     "rerank_weight": 0.4
@@ -76,7 +77,21 @@
         "api_key": "YOUR_API_KEY",
         "openai_base_url": "https://YOUR_MIMO_API_BASE_URL/v1"
       }
+    },
+    "cursor": {
+      "max_candidates": 2000,
+      "interval": 7200,
+      "max_merges_per_cycle": 5,
+      "exact_dup_threshold": 0.95,
+      "near_dup_threshold": 0.88,
+      "vector_sim_threshold": 0.82,
+      "jaccard_threshold": 0.45
     }
+  },
+  "evolve_mem": {
+    "interval": 14400,
+    "threshold_high": 0.7,
+    "threshold_low": 0.3
   },
   "_comment_mem0_llm": "事实提取LLM配置：用于从对话中提取结构化记忆",
   "_comment_conflict": "矛盾消解配置：新旧记忆矛盾检测+并行投票",

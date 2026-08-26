@@ -186,3 +186,21 @@ def get_version_content(memory_id: str, version: int) -> Optional[Dict[str, Any]
         return None
     finally:
         conn.close()
+
+
+def cleanup(memory_id: str) -> int:
+    """删除指定记忆的所有版本历史，返回删除条数。"""
+    _ensure_schema()
+    conn = sqlite3.connect(_get_db_path(), timeout=10)
+    try:
+        cursor = conn.execute(
+            "DELETE FROM versions WHERE memory_id=?",
+            (memory_id,),
+        )
+        conn.commit()
+        return cursor.rowcount
+    except Exception as e:
+        logger.debug("version_tracker cleanup 失败: %s", e)
+        return 0
+    finally:
+        conn.close()

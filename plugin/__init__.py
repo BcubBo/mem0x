@@ -326,7 +326,7 @@ class Mem0RemoteProvider(MemoryProvider):
                     (r'(?<!\d)[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx](?!\d)', '[REDACTED_ID]'),
                     (r'(?<!\d)1[3-9]\d{9}(?!\d)', '[REDACTED_PHONE]'),
                     (r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', '[REDACTED_EMAIL]'),
-                    (r'(password|passwd|secret|token|api[_-]?key)\s*[:=]\s*\S+', r'\1=[REDACTED]'),
+                    (r'(密码|口令|password|passwd|secret|token|api[_-]?key)\s*[:=]\s*\S+', r'\1=[REDACTED]'),
                 ]
                 for pattern, replacement in pii_replacements:
                     content = re.sub(pattern, replacement, content, flags=re.IGNORECASE)

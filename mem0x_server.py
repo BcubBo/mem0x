@@ -260,6 +260,7 @@ def _get_audit_db() -> sqlite3.Connection:
             "delete_audit.db",
         )
     conn = sqlite3.connect(_audit_db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS delete_audit (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -384,9 +385,10 @@ def _get_api_key() -> Optional[str]:
 
 
 def verify_api_key(request: Request):
-    """FastAPI 依赖：校验 API Key。未配置 key 时免认证（兼容升级）。"""
+    """FastAPI 依赖：API Key 验证。"""
     required_key = _get_api_key()
     if not required_key:
+        logger.warning("⚠️ API key未配置，/stats等端点免认证运行（仅限开发环境）")
         return  # 未配置 api_key，免认证（向后兼容）
 
     # 从 X-API-Key 或 Authorization: Bearer <key> 取
@@ -615,7 +617,7 @@ async def search_memory(req: SearchRequest, request: Request):
     logger.info("🔍 search: user_id=%s, agent_id=%s, req.user_id=%s, req.agent_id=%s", user_id, agent_id, req.user_id, req.agent_id)
     # 打印请求体原文（调试用）
     import json as _json
-    logger.info("🔍 search: body=%s", _json.dumps({"query": req.query, "user_id": req.user_id, "agent_id": req.agent_id}, ensure_ascii=False))
+    logger.debug("🔍 search: body=%s", _json.dumps({"query": req.query[:50], "user_id": req.user_id, "agent_id": req.agent_id}, ensure_ascii=False))
 
     # 构建 filters（mem0 2.0+ 必须有 user_id/agent_id/run_id 之一）
     filters = {"user_id": user_id, "agent_id": agent_id}
@@ -854,6 +856,13 @@ async def delete_memory_confirm(req: DeleteRequest, request: Request):
     except Exception as e:
         logger.debug("FTS5 delete 失败: %s", e)
 
+    # 6. version_tracker 清理
+    try:
+        from wrapper import version_tracker
+        version_tracker.cleanup(req.memory_id)
+    except Exception as e:
+        logger.debug("version_tracker cleanup 失败: %s", e)
+
     return {"status": "ok", "memory_id": req.memory_id, "action": "hard_deleted"}
 
 
@@ -868,6 +877,13 @@ async def delete_memory_cancel(req: DeleteRequest, request: Request):
     ok = _cancel_delete_token(req.confirm_token)
     if not ok:
         raise HTTPException(status_code=400, detail="Invalid or already used/cancelled token")
+    
+    # 恢复 deleted_at（取消软删除）
+    try:
+        memory = get_memory()
+        await memory.update(req.memory_id, metadata={"deleted_at": None})
+    except Exception as e:
+        logger.warning("cancel恢复deleted_at失败: %s", e)
     
     return {"status": "ok", "memory_id": req.memory_id, "action": "cancelled"}
 

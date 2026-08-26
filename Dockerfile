@@ -17,6 +17,7 @@ RUN tar xzf /tmp/en_core_web_sm-3.8.0.tar.gz -C /usr/local/lib/python3.12/site-p
 # 复制代码
 COPY wrapper/ ./wrapper/
 COPY security/ ./security/
+COPY plugin/ ./plugin/
 COPY mem0x_server.py .
 
 # 创建数据目录

@@ -102,21 +102,16 @@ async def analyze_memory_quality(memory, user_id: str = "bo", agent_id: str = "h
         if agent_id:
             filters["agent_id"] = agent_id
 
-        # 分页获取所有记忆（每批200，最多1000条）
-        all_items = []
-        offset = 0
-        page_size = 200
-        max_items = 1000
-        while len(all_items) < max_items:
-            results = await memory.get_all(filters=filters, top_k=page_size, offset=offset)
-            items = results.get("results", []) if isinstance(results, dict) else []
-            if not items:
-                break
-            all_items.extend(items)
-            if len(items) < page_size:
-                break
-            offset += page_size
-        items = all_items[:max_items]
+        # get_all 不支持 offset 分页，直接用 top_k 获取（mem0 内部用 scroll）
+        try:
+            results = await asyncio.wait_for(
+                memory.get_all(filters=filters, top_k=500),
+                timeout=30,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("evolve_mem: get_all 超时")
+            return {"total": 0, "pruned": 0, "error": "timeout"}
+        items = results.get("results", []) if isinstance(results, dict) else []
 
         stats["total"] = len(items)
         now = datetime.now(timezone.utc)
@@ -205,20 +200,16 @@ async def run_evolve_cycle(memory, neo4j_hook=None, user_id: str = "bo",
             if agent_id:
                 filters["agent_id"] = agent_id
 
-            # 分页获取所有记忆
-            all_items = []
-            offset = 0
-            page_size = 200
-            while True:
-                results = await memory.get_all(filters=filters, top_k=page_size, offset=offset)
-                items = results.get("results", []) if isinstance(results, dict) else []
-                if not items:
-                    break
-                all_items.extend(items)
-                if len(items) < page_size:
-                    break
-                offset += page_size
-            items = all_items
+            # get_all 不支持 offset，直接获取
+            try:
+                results = await asyncio.wait_for(
+                    memory.get_all(filters=filters, top_k=500),
+                    timeout=30,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("evolve_mem: 清理阶段 get_all 超时")
+                return {"total": 0, "pruned": 0, "error": "timeout"}
+            items = results.get("results", []) if isinstance(results, dict) else []
 
             # FSRS 参数
             FACTORS = 0.9

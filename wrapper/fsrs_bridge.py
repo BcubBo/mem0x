@@ -80,13 +80,36 @@ def get_quality_score(metadata: dict, created_at: str = None,
     - Retrievability R：可检索概率（权重 0.5）
     - Stability S：归一化到 [0,1]（权重 0.3）
     - Access boost：访问次数加成（权重 0.2）
+
+    旧记忆（无 fsrs_card）使用 age-based 基线分数，避免全部被判为低质。
     """
-    card = card_from_metadata(metadata, created_at)
-    R = _scheduler.get_card_retrievability(card)
-    S = card.stability or 1.0  # 新卡片 stability 可能为 None
-    # 归一化 S：30天为中位数
-    S_norm = min(S / 30.0, 1.0)
-    # 访问加成：log(1 + count) / 5，上限 1.0
+    has_fsrs_card = bool(metadata.get("fsrs_card"))
+
+    if has_fsrs_card:
+        card = card_from_metadata(metadata, created_at)
+        R = _scheduler.get_card_retrievability(card)
+        S = card.stability or 1.0
+        S_norm = min(S / 30.0, 1.0)
+    else:
+        # 旧记忆无 fsrs_card：用 age-based 基线
+        # 新记忆（<7天）R=0.8，老记忆（>30天）R=0.5
+        age_days = _age_days(created_at)
+        R = max(0.5, 1.0 - age_days / 60.0)  # 60天衰减到0.5
+        S_norm = min(age_days / 30.0, 1.0)  # 老记忆稳定性更高
+
     access_boost = min(math.log1p(access_count) / 5.0, 1.0)
     Q = 0.5 * R + 0.3 * S_norm + 0.2 * access_boost
     return round(Q, 4)
+
+
+def _age_days(created_at: str = None) -> float:
+    """计算记忆年龄（天）。"""
+    if not created_at:
+        return 0.5
+    try:
+        dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max((datetime.now(timezone.utc) - dt).days, 0)
+    except Exception:
+        return 0.5

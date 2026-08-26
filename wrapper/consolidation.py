@@ -146,22 +146,37 @@ def _get_archived_ids() -> Set[str]:
         conn.close()
 
 
+_merge_cache: Optional[set] = None
+_merge_cache_at: float = 0
+
+
 def _is_already_merged(source_ids: List[str]) -> bool:
-    """检查这组源记忆是否已经合并过。"""
+    """检查这组源记忆是否已经合并过（带内存缓存）。"""
+    global _merge_cache, _merge_cache_at
     _ensure_schema()
     import json
-    conn = sqlite3.connect(_get_db_path(), timeout=10)
-    try:
-        rows = conn.execute("SELECT source_ids FROM merge_history").fetchall()
-        for r in rows:
-            existing = set(json.loads(r[0]))
-            if existing == set(source_ids):
-                return True
-        return False
-    except Exception:
-        return False
-    finally:
-        conn.close()
+
+    # 缓存5分钟
+    now = time.time()
+    if _merge_cache is None or now - _merge_cache_at > 300:
+        conn = sqlite3.connect(_get_db_path(), timeout=10)
+        try:
+            rows = conn.execute("SELECT source_ids FROM merge_history").fetchall()
+            _merge_cache = set()
+            for r in rows:
+                try:
+                    ids_tuple = tuple(sorted(json.loads(r[0])))
+                    _merge_cache.add(ids_tuple)
+                except Exception:
+                    pass
+            _merge_cache_at = now
+        except Exception:
+            _merge_cache = set()
+        finally:
+            conn.close()
+
+    key = tuple(sorted(source_ids))
+    return key in _merge_cache
 
 
 # ═══════════════════════════════════════════════════════

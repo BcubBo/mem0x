@@ -222,9 +222,8 @@ def boost_salience_for_results(results: List[dict]) -> List[dict]:
     if not ids:
         return results
 
-    # 批量 boost
-    for mid in ids:
-        on_memory_accessed(mid)
+    # 批量 boost（单连接，减少 N+1）
+    batch_on_memory_accessed(ids)
 
     # 获取更新后的 salience
     salience_map = get_batch_salience(ids)
@@ -236,3 +235,45 @@ def boost_salience_for_results(results: List[dict]) -> List[dict]:
             r["heat"] = salience_map[mid]
 
     return results
+
+
+def batch_on_memory_accessed(memory_ids: list) -> None:
+    """批量 boost 显著性（单连接，减少 N+1）。"""
+    _ensure_schema()
+    cfg = _get_config()
+    boost = cfg.get("access_boost", DEFAULT_ACCESS_BOOST)
+    decay_rate = cfg.get("decay_rate", DEFAULT_DECAY_RATE)
+    now = time.time()
+
+    conn = _get_db()
+    try:
+        for memory_id in memory_ids:
+            if not memory_id:
+                continue
+            try:
+                row = conn.execute(
+                    "SELECT salience, last_access, access_count FROM salience WHERE memory_id=?",
+                    (memory_id,),
+                ).fetchone()
+                if row:
+                    old_s = row["salience"]
+                    old_ts = row["last_access"]
+                    cnt = row["access_count"]
+                    days_elapsed = (now - old_ts) / 86400
+                    decayed = old_s * math.exp(-decay_rate * days_elapsed)
+                    new_s = min(1.0, decayed + boost)
+                    conn.execute(
+                        "UPDATE salience SET salience=?, last_access=?, access_count=? WHERE memory_id=?",
+                        (new_s, now, cnt + 1, memory_id),
+                    )
+                else:
+                    new_s = cfg.get("initial_value", DEFAULT_INITIAL)
+                    conn.execute(
+                        "INSERT INTO salience (memory_id, salience, last_access, access_count, created_at) VALUES (?,?,?,?,?)",
+                        (memory_id, new_s, now, 1, now),
+                    )
+            except Exception as e:
+                logger.debug("salience batch boost 失败 %s: %s", memory_id[:16], e)
+        conn.commit()
+    finally:
+        conn.close()

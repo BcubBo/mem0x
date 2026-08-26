@@ -102,9 +102,20 @@ async def analyze_memory_quality(memory, user_id: str = "bo", agent_id: str = "h
         if agent_id:
             filters["agent_id"] = agent_id
 
-        # 使用 get_all 获取所有记忆（不依赖 search score）
-        results = await memory.get_all(filters=filters, top_k=500)
-        items = results.get("results", []) if isinstance(results, dict) else []
+        # 分页获取所有记忆（每批200，避免一次加载过多）
+        all_items = []
+        offset = 0
+        page_size = 200
+        while True:
+            results = await memory.get_all(filters=filters, top_k=page_size, offset=offset)
+            items = results.get("results", []) if isinstance(results, dict) else []
+            if not items:
+                break
+            all_items.extend(items)
+            if len(items) < page_size:
+                break
+            offset += page_size
+        items = all_items
 
         stats["total"] = len(items)
         now = datetime.now(timezone.utc)
@@ -193,9 +204,20 @@ async def run_evolve_cycle(memory, neo4j_hook=None, user_id: str = "bo",
             if agent_id:
                 filters["agent_id"] = agent_id
 
-            # 使用 get_all 获取所有记忆
-            results = await memory.get_all(filters=filters, top_k=500)
-            items = results.get("results", []) if isinstance(results, dict) else []
+            # 分页获取所有记忆
+            all_items = []
+            offset = 0
+            page_size = 200
+            while True:
+                results = await memory.get_all(filters=filters, top_k=page_size, offset=offset)
+                items = results.get("results", []) if isinstance(results, dict) else []
+                if not items:
+                    break
+                all_items.extend(items)
+                if len(items) < page_size:
+                    break
+                offset += page_size
+            items = all_items
 
             # FSRS 参数
             FACTORS = 0.9

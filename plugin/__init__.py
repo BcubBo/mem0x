@@ -14,7 +14,11 @@ import os
 import threading
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
+
+# 共享线程池（替代每次新建 daemon thread）
+_write_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="mem0x-write")
 
 logger = logging.getLogger("hermes_plugins.mem0x")
 
@@ -267,7 +271,7 @@ class Mem0RemoteProvider(MemoryProvider):
                 params["metadata"] = metadata
             client.call("add", params)
 
-        threading.Thread(target=_write, daemon=True).start()
+        _write_executor.submit(_write)
 
     def on_pre_compress(self, messages: list, **kwargs) -> Optional[str]:
         """压缩前抢救。"""
@@ -285,7 +289,7 @@ class Mem0RemoteProvider(MemoryProvider):
             )
             client.call("add", {"messages": content, "infer": True})
 
-        threading.Thread(target=_write, daemon=True).start()
+        _write_executor.submit(_write)
         return None
 
     def on_memory_write(self, action: str, target: str, content: str, metadata: dict = None, **kwargs) -> None:
@@ -301,7 +305,7 @@ class Mem0RemoteProvider(MemoryProvider):
                 "metadata": {"source": "MEMORY.md", "action": action},
             })
 
-        threading.Thread(target=_write, daemon=True).start()
+        _write_executor.submit(_write)
 
     def get_tool_schemas(self) -> List[dict]:
         """返回工具 schema。"""

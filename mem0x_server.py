@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import asyncio
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -224,23 +225,32 @@ app = FastAPI(
 # ═══════════════════════════════════════════════════
 
 async def _update_usage_stats_sync(memory_instance, memory_ids: list):
-    """批量更新被搜索记忆的使用维度字段（同步，在 executor 中执行）。"""
+    """批量更新被搜索记忆的使用维度字段（并发执行，减少 N+1）。"""
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc).isoformat()
-    for mid in memory_ids:
-        if not mid or mid.startswith("neo4j:"):
-            continue
+    valid_ids = [mid for mid in memory_ids if mid and not mid.startswith("neo4j:")]
+    if not valid_ids:
+        return
+
+    # 并发获取所有 metadata
+    async def _get_meta(mid):
         try:
             existing = await memory_instance.get(mid)
-            existing_metadata = existing.get("metadata", {}) if existing else {}
-            current_count = existing_metadata.get("search_count", 0)
-            new_count = int(current_count) + 1 if isinstance(current_count, (int, float)) else 1
-            await memory_instance.update(
-                mid,
-                metadata={"search_count": new_count, "last_accessed_at": now},
-            )
-        except Exception as e:
-            logger.debug("更新使用维度失败 %s: %s", mid[:16], e)
+            return mid, existing.get("metadata", {}) if existing else {}
+        except Exception:
+            return mid, {}
+
+    results = await asyncio.gather(*[_get_meta(mid) for mid in valid_ids])
+
+    # 批量更新
+    update_tasks = []
+    for mid, meta in results:
+        current_count = meta.get("search_count", 0)
+        new_count = int(current_count) + 1 if isinstance(current_count, (int, float)) else 1
+        update_tasks.append(
+            memory_instance.update(mid, metadata={"search_count": new_count, "last_accessed_at": now})
+        )
+    await asyncio.gather(*update_tasks, return_exceptions=True)
 
 import hashlib
 import hmac

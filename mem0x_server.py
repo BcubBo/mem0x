@@ -20,6 +20,9 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
     datefmt="%H:%M:%S",
 )
+# 抑制 httpx INFO 日志（scroll/get 请求刷屏）
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger("mem0x")
 
 # ── 确保项目根目录在 sys.path ──

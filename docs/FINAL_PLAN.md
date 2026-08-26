@@ -100,8 +100,8 @@
 | 23 | _get_db/_ensure_schema重复 | 审计三 | salience/self_edit/conflict 3处 | 待修 |
 | 24 | 五维vs六维命名不一致 | 审计二 | 代码6权重，文档说"五维" | ✅ 已修 |
 | 25 | 核心记忆存预览非原文 | 审计五 | content_preview[:200] | ✅ 已修 |
-| 26 | 0测试（含写入可靠性测试） | 审计七+MiMo | 无回归保障 | 待修 |
-| 27 | except 163处，debug吞占多数 | 审计七 | 故障不可见 | 待修 |
+| 26 | 0测试（含写入可靠性测试） | 审计七+MiMo | 无回归保障 | ✅ 已修(基础pytest) |
+| 27 | except 163处，debug吞占多数 | 审计七 | 故障不可见 | ✅ 已修(写入路径7处) |
 | 41 | Neo4j source_memory_id无限拼接 | MiMo审计 | 100条引用后字段~3800字符，查询效率下降 | ✅ 已修 |
 | 42 | /delete/confirm硬删未清理version_tracker | MiMo审计 | 历史版本残留 | ✅ 已修 |
 

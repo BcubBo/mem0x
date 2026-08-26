@@ -297,7 +297,7 @@ class Neo4jHook:
                             etype = "Entity"
                         session.run(
                             "MERGE (n {name: toLower($name)}) "
-                            "SET n:$etype, n.original_name = $name, "
+                            "SET n.original_name = $name, "
                             "n.source_memory_id = CASE "
                             "  WHEN n.source_memory_id IS NULL THEN $mid "
                             "  WHEN n.source_memory_id CONTAINS $mid THEN n.source_memory_id "

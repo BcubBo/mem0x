@@ -36,11 +36,17 @@ _llm_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="llm-judge"
 
 # ── 实体级互斥锁（防止同一实体并发矛盾消解导致双写竞态） ──
 _entity_locks: dict[str, asyncio.Lock] = {}
+_entity_locks_MAX = 10000
 
 
 def _get_entity_lock(entity: str) -> asyncio.Lock:
-    """获取指定实体的互斥锁（懒创建）。"""
+    """获取指定实体的互斥锁（懒创建，超过上限时清理最旧的）。"""
     if entity not in _entity_locks:
+        if len(_entity_locks) >= _entity_locks_MAX:
+            # 清理一半最旧的锁（dict 保持插入顺序）
+            to_remove = list(_entity_locks.keys())[:_entity_locks_MAX // 2]
+            for k in to_remove:
+                del _entity_locks[k]
         _entity_locks[entity] = asyncio.Lock()
     return _entity_locks[entity]
 
@@ -570,9 +576,9 @@ async def _detect_and_resolve_inner(memory, new_text: str, filters: dict, auto_a
 
             llm_call_count += 1
             logger.info("调用 LLM 并行投票 (%d/%d): new=%s..., old=%s...", llm_call_count, MAX_LLM_CALLS, new_text[:30], old_text[:30])
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             llm_result = await loop.run_in_executor(
-                _llm_executor,
+                None,
                 lambda: _llm_judge_parallel(new_text, old_text, old_meta=meta, old_created_at=old_created_at, num_votes=NUM_VOTES),
             )
             logger.info("LLM 返回结果: %s", llm_result)

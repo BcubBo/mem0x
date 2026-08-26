@@ -654,7 +654,7 @@ async def search_memory(req: SearchRequest, request: Request):
 
     async def _fts5_search():
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             fts5 = get_fts5()
             return await loop.run_in_executor(None, fts5.search, req.query, user_id, search_limit)
         except Exception as e:
@@ -737,7 +737,7 @@ async def search_memory(req: SearchRequest, request: Request):
             from wrapper.mem0_runtime import rerank as do_rerank, load_config
             config = load_config()
             docs = [r.get("memory", "") for r in results]
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             rerank_results = await loop.run_in_executor(
                 None,
                 lambda: do_rerank(req.query, docs, top_n=req.limit, config=config),

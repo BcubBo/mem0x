@@ -113,11 +113,11 @@ def _record_merge(merged_id: str, source_ids: List[str], merged_text: str) -> No
         conn.commit()
     except Exception as e:
         logger.debug("merge_history insert 失败: %s", e)
+    finally:
+        conn.close()
     # 同步更新缓存
     if _merge_cache is not None:
         _merge_cache.add(tuple(sorted(source_ids)))
-    finally:
-        conn.close()
 
 
 def _record_archive(memory_id: str, merged_into: str) -> None:

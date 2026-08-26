@@ -48,8 +48,8 @@
 
 | # | 问题 | 来源 | 影响 | 状态 |
 |---|------|------|------|------|
-| 5 | 召回侧无注入边界 | 审计四 | 存储型注入闭环可达 | 待修 |
-| 6 | is_available打网络 | 审计四 | 违反宿主契约，慢服务拖慢启动 | 待修 |
+| 5 | 召回侧无注入边界 | 审计四 | 存储型注入闭环可达 | ✅ 已修 |
+| 6 | is_available打网络 | 审计四 | 违反宿主契约，慢服务拖慢启动 | ✅ 已修 |
 | 7 | 跨库写入无事务 | 审计五 | 中间失败静默降级，调用方看到"成功" | 待修（见写入可靠性方案） |
 | 8 | 软删cancel后deleted_at不恢复 | 审计五 | 记忆永久隐藏 | ✅ 已修 |
 | 9 | delete_audit无WAL | 审计五 | 并发删除"database is locked" | ✅ 已修 |
@@ -62,12 +62,12 @@
 | 30 | 补偿线程未纳入lifespan管理 | MiMo审计 | 优雅关闭时数据不一致 | 待修（方案阶段） |
 | 31 | /health暴露写入指标无认证 | MiMo审计 | 运营信息泄露 | 待修（方案阶段） |
 | 32 | 补偿队列"满时丢弃最旧"语义错误 | MiMo审计 | 最需要补偿的数据最先丢失 | 待修（方案阶段） |
-| 33 | MEM0X_DELETE_SECRET每次重启随机生成 | MiMo审计 | 重启后pending token全部失效 | 待修 |
+| 33 | MEM0X_DELETE_SECRET每次重启随机生成 | MiMo审计 | 重启后pending token全部失效 | ✅ 已修 |
 | 43 | rate_limit()依赖是空操作，多数端点无限流 | MiMo全面审计 | /consolidate /evolve /expire等LLM密集端点可被恶意调用耗尽额度 | 待修 |
 | 44 | Rerank同步HTTP调用阻塞事件循环 | MiMo全面审计 | 搜索并发降至1req/10s，高负载下全API延迟飙升 | 待修 |
 | 45 | Neo4j关系写入Cypher注入风险 | MiMo全面审计 | rel_type通过f-string拼接Cypher，白名单在Python侧可被绕过 | 待修 |
 | 46 | /stats端点无认证 | MiMo全面审计 | 未配置key时暴露Qdrant/Neo4j运营信息 | ✅ 已修 |
-| 47 | RECENCY_LAMBDA全局变量并发修改无锁 | MiMo全面审计 | 并发请求可能使用不同lambda值，打分不可预测 | 待修 |
+| 47 | RECENCY_LAMBDA全局变量并发修改无锁 | MiMo全面审计 | 并发请求可能使用不同lambda值，打分不可预测 | ✅ 已修 |
 
 ### 🟠 P2 — 性能 + 写入可靠性（影响响应速度+数据一致性）
 

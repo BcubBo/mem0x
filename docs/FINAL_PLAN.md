@@ -81,7 +81,7 @@
 | 19 | 无界线程（plugin每次spawn daemon） | 审计六 | 高频对话无池约束 | ✅ 已修 |
 | 34 | Qdrant/Neo4j写入零重试 | MiMo审计 | 核心通路无保障 | ✅ 已修 |
 | 35 | 补偿队列内存重启丢失 | MiMo审计 | 进程重启=数据丢失 | 待修（方案阶段） |
-| 36 | 无断路器，Qdrant宕机时40线程全阻塞 | MiMo审计 | 故障扩散影响全API | 待修（方案阶段） |
+| 36 | 无断路器，Qdrant宕机时40线程全阻塞 | MiMo审计 | 故障扩散影响全API | ✅ 已修 |
 | 37 | Qdrant连接池无配置 | MiMo审计 | 默认值可能不够40并发 | 待修 |
 | 38 | Redis连接无max_connections | MiMo审计 | 高并发突破maxclients | ✅ 已修 |
 | 39 | 重试退避参数不足（7秒 vs 重启10-30秒） | MiMo审计 | 服务未恢复就耗尽重试 | ✅ 已修 |
@@ -95,7 +95,7 @@
 | # | 问题 | 来源 | 影响 | 状态 |
 |---|------|------|------|------|
 | 20 | 版本号4处不一致 | 审计二 | FastAPI 0.1.16 / compose 0.1.5 / plugin.yaml 0.1.15 / README v0.1.18.1 | ✅ 已修 |
-| 21 | FSRS函数重复2份 | 审计三 | evolve_mem.py内复制 | 待修 |
+| 21 | FSRS函数重复2份 | 审计三 | evolve_mem.py内复制 | ✅ 已修 |
 | 22 | PII正则重复 | 审计三 | pipeline/plugin/neo4j 3处 | ✅ 已修 |
 | 23 | _get_db/_ensure_schema重复 | 审计三 | salience/self_edit/conflict 3处 | 待修 |
 | 24 | 五维vs六维命名不一致 | 审计二 | 代码6权重，文档说"五维" | 待修 |

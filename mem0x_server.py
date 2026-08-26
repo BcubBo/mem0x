@@ -473,7 +473,6 @@ def _get_redis() -> Optional[aioredis.Redis]:
             max_connections=20,
             socket_timeout=5,
             socket_connect_timeout=5,
-            retry_on_timeout=True,
         )
         logger.info("Redis 连接成功: %s:%d", host, port)
         return _redis_client

@@ -159,6 +159,10 @@ async def analyze_memory_quality(memory, user_id: str = "bo", agent_id: str = "h
             variance = sum((s - stats["quality_mean"]) ** 2 for s in scores) / len(scores)
             stats["quality_std"] = round(variance ** 0.5, 4)
 
+        logger.info("记忆质量分析: 总%d, 高质%d, 中质%d, 低质%d, 过期%d",
+                     stats["total"], stats["high_quality"], stats["medium_quality"],
+                     stats["low_quality"], stats["stale"])
+
     except Exception as e:
         logger.error("分析记忆质量失败: %s", e)
 

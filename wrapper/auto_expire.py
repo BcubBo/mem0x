@@ -97,6 +97,7 @@ def run_expire_cycle(neo4j_hook=None, user_id: str = "bo") -> int:
     if client is None:
         logger.warning("auto_expire: Qdrant 客户端不可用")
         return 0
+    logger.debug("auto_expire: 开始扫描 user_id=%s", user_id)
 
     # 只扫描指定用户的记忆
     # TODO: 加 created_at Range 预过滤需要写入链路存数字时间戳

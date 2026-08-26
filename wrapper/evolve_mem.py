@@ -102,11 +102,12 @@ async def analyze_memory_quality(memory, user_id: str = "bo", agent_id: str = "h
         if agent_id:
             filters["agent_id"] = agent_id
 
-        # 分页获取所有记忆（每批200，避免一次加载过多）
+        # 分页获取所有记忆（每批200，最多1000条）
         all_items = []
         offset = 0
         page_size = 200
-        while True:
+        max_items = 1000
+        while len(all_items) < max_items:
             results = await memory.get_all(filters=filters, top_k=page_size, offset=offset)
             items = results.get("results", []) if isinstance(results, dict) else []
             if not items:
@@ -115,7 +116,7 @@ async def analyze_memory_quality(memory, user_id: str = "bo", agent_id: str = "h
             if len(items) < page_size:
                 break
             offset += page_size
-        items = all_items
+        items = all_items[:max_items]
 
         stats["total"] = len(items)
         now = datetime.now(timezone.utc)

@@ -232,7 +232,8 @@ async def _update_usage_stats_sync(memory_instance, memory_ids: list):
     if not valid_ids:
         return
 
-    # 并发获取所有 metadata
+    # 并发获取（限制最多3个同时请求，避免Qdrant scroll风暴）
+    sem = asyncio.Semaphore(3)
     async def _get_meta(mid):
         try:
             existing = await memory_instance.get(mid)

@@ -428,11 +428,16 @@ async def find_merge_groups(
         filters["agent_id"] = agent_id
 
     try:
-        result = await memory.get_all(filters=filters, top_k=top_k)
-        items = result.get("results", []) if isinstance(result, dict) else []
+        from wrapper.fetch_all import fetch_all_memories
+        items = await fetch_all_memories(memory, filters=filters, max_items=top_k)
     except Exception as e:
-        logger.error("get_all 失败: %s", e)
-        return []
+        logger.error("fetch_all 失败，fallback get_all: %s", e)
+        try:
+            result = await memory.get_all(filters=filters, top_k=top_k)
+            items = result.get("results", []) if isinstance(result, dict) else []
+        except Exception as e2:
+            logger.error("get_all 也失败: %s", e2)
+            return []
 
     if len(items) < MIN_GROUP_SIZE:
         return []

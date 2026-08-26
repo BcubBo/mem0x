@@ -46,6 +46,43 @@ MIN_MEMORY_LENGTH = 15
 _running = False
 _thread: Optional[threading.Thread] = None
 _merge_lock = threading.Lock()
+_redis_client = None  # Redis 连接（延迟初始化）
+
+
+def _get_redis():
+    """获取 Redis 连接（延迟初始化）。"""
+    global _redis_client
+    if _redis_client is not None:
+        return _redis_client
+    try:
+        import redis
+        _redis_client = redis.Redis(host="mem0x-redis", port=6379, db=0, decode_responses=True)
+        _redis_client.ping()
+        return _redis_client
+    except Exception:
+        return None
+
+
+def _get_cursor() -> int:
+    """从 Redis 读取候选游标（0=默认）。"""
+    r = _get_redis()
+    if r:
+        try:
+            val = r.get("consolidation:cursor")
+            return int(val) if val else 0
+        except Exception:
+            pass
+    return 0
+
+
+def _set_cursor(val: int):
+    """将候选游标写入 Redis。"""
+    r = _get_redis()
+    if r:
+        try:
+            r.set("consolidation:cursor", str(val), ex=86400 * 7)  # 7天过期
+        except Exception:
+            pass
 
 
 # ═══════════════════════════════════════════════════════
@@ -468,11 +505,22 @@ async def find_merge_groups(
     if len(candidates) < MIN_GROUP_SIZE:
         return []
 
-    # 限制候选数量（O(n²) 复杂度，上限 2000 防止计算爆炸）
+    # 限制候选数量（O(n²) 复杂度，每轮处理 2000 条，Redis 游标轮转）
     MAX_CANDIDATES = 2000
     if len(candidates) > MAX_CANDIDATES:
-        logger.info("consolidation: 候选 %d 条超过上限，截断到 %d", len(candidates), MAX_CANDIDATES)
-        candidates = candidates[:MAX_CANDIDATES]
+        # 从 Redis 游标位置开始
+        cursor = _get_cursor()
+        start = cursor % len(candidates)
+        end = start + MAX_CANDIDATES
+        if end <= len(candidates):
+            candidates = candidates[start:end]
+        else:
+            candidates = candidates[start:] + candidates[:end - len(candidates)]
+        _set_cursor(end % len(candidates))
+        logger.info("consolidation: 候选 %d 条，从偏移 %d 取 %d 条（游标→%d）",
+                    len(items), start, len(candidates), end % len(candidates))
+    else:
+        _set_cursor(0)
 
     logger.info("consolidation: %d 候选记忆（总 %d，归档跳过 %d）",
                 len(candidates), len(items), len(items) - len(candidates))

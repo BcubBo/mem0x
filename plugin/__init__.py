@@ -320,7 +320,14 @@ class Mem0RemoteProvider(MemoryProvider):
             content = args.get("content", "")
             if content:
                 import re
-                from security.pii import ID_CARD_RE, PHONE_RE, EMAIL_RE, PASSWORD_RE
+                try:
+                    from security.pii import ID_CARD_RE, PHONE_RE, EMAIL_RE, PASSWORD_RE
+                except ImportError:
+                    # 降级：使用内联正则（与 pii.py 一致）
+                    ID_CARD_RE = re.compile(r'(?<!\d)[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx](?!\d)')
+                    PHONE_RE = re.compile(r'(?<!\d)1[3-9]\d{9}(?!\d)')
+                    EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}')
+                    PASSWORD_RE = re.compile(r'(密码|口令|password|passwd|secret|token|api[_-]?key)\s*[:=]\s*\S+', re.IGNORECASE)
                 # 身份证、手机、邮箱、密码明文 → 脱敏替换
                 pii_replacements = [
                     (ID_CARD_RE, '[REDACTED_ID]'),

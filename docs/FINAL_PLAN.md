@@ -73,12 +73,12 @@
 
 | # | 问题 | 来源 | 影响 | 状态 |
 |---|------|------|------|------|
-| 14 | 搜索N+1（_update_usage_stats_sync） | 审计六 | 最多200次DB往返 | 待修 |
-| 15 | salience N+1（boost_salience_for_results） | 审计六 | 逐条写SQLite | 待修 |
+| 14 | 搜索N+1（_update_usage_stats_sync） | 审计六 | 最多200次DB往返 | ✅ 已修 |
+| 15 | salience N+1（boost_salience_for_results） | 审计六 | 逐条写SQLite | ✅ 已修 |
 | 16 | LLM阻塞事件循环（含async重试不兼容） | 审计六+MiMo | 矛盾消解堵死+重试装饰器需async版 | ✅ 已修 |
 | 17 | ThreadPoolExecutor每次新建 | 审计六 | 无复用，资源浪费 | ✅ 已修 |
-| 18 | 后台线程top_k=500无分页 | 审计六 | 记忆>500条后永不感知 | 待修 |
-| 19 | 无界线程（plugin每次spawn daemon） | 审计六 | 高频对话无池约束 | 待修 |
+| 18 | 后台线程top_k=500无分页 | 审计六 | 记忆>500条后永不感知 | ✅ 已修 |
+| 19 | 无界线程（plugin每次spawn daemon） | 审计六 | 高频对话无池约束 | ✅ 已修 |
 | 34 | Qdrant/Neo4j写入零重试 | MiMo审计 | 核心通路无保障 | ✅ 已修 |
 | 35 | 补偿队列内存重启丢失 | MiMo审计 | 进程重启=数据丢失 | 待修（方案阶段） |
 | 36 | 无断路器，Qdrant宕机时40线程全阻塞 | MiMo审计 | 故障扩散影响全API | 待修（方案阶段） |
@@ -86,7 +86,7 @@
 | 38 | Redis连接无max_connections | MiMo审计 | 高并发突破maxclients | ✅ 已修 |
 | 39 | 重试退避参数不足（7秒 vs 重启10-30秒） | MiMo审计 | 服务未恢复就耗尽重试 | ✅ 已修 |
 | 40 | 死信队列无告警+无查询接口 | MiMo审计 | 死信堆积无人知道 | 待修（方案阶段） |
-| 48 | consolidation合并检查全表扫描 | MiMo全面审计 | _is_already_merged加载整个merge_history表，O(N)复杂度 | 待修 |
+| 48 | consolidation合并检查全表扫描 | MiMo全面审计 | _is_already_merged加载整个merge_history表，O(N)复杂度 | ✅ 已修 |
 | 49 | 搜索端点输出用户查询内容到INFO日志 | MiMo全面审计 | 日志泄露用户查询，高频时日志膨胀 | ✅ 已修 |
 | 50 | 插件PII脱敏缺中文密码关键词 | MiMo全面审计 | 插件层密码正则无"密码""口令"，与pipeline.py不一致 | ✅ 已修 |
 

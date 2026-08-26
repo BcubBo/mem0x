@@ -348,7 +348,7 @@ def _log_delete_event(token: str, memory_id: str, user_id: str = None,
             )
         conn.commit()
     except Exception as e:
-        logger.debug("审计日志写入失败: %s", e)
+        logger.warning("审计日志写入失败: %s", e)
 
 
 def _generate_delete_token(memory_id: str, user_id: str = None, api_key: str = None) -> str:
@@ -619,27 +619,27 @@ async def add_memory(req: AddRequest, request: Request):
         try:
             salience_register(memory_id, content_preview=content[:200])
         except Exception as e:
-            logger.debug("salience register 失败: %s", e)
+            logger.warning("salience register 失败: %s", e)
 
         # 版本追踪：保存初始版本
         try:
             version_tracker.save_version(memory_id, content, reason="create")
         except Exception as e:
-            logger.debug("version_tracker init 失败: %s", e)
+            logger.warning("version_tracker init 失败: %s", e)
 
         try:
             hook = get_hook()
             if hook.enabled:
                 hook.write(memory_id, content)
         except Exception as e:
-            logger.debug("neo4j write 失败: %s", e)
+            logger.warning("neo4j write 失败: %s", e)
 
         # FTS5 双写
         try:
             from wrapper.fts5_store import get_fts5
             get_fts5().write(memory_id, content, user_id)
         except Exception as e:
-            logger.debug("FTS5 write 失败: %s", e)
+            logger.warning("FTS5 write 失败: %s", e)
 
     elapsed_ms = int((time.time() - start) * 1000)
     result["elapsed_ms"] = elapsed_ms
@@ -891,7 +891,7 @@ async def delete_memory_confirm(req: DeleteRequest, request: Request):
     try:
         salience_delete(req.memory_id)
     except Exception as e:
-        logger.debug("salience delete 失败: %s", e)
+        logger.warning("salience delete 失败: %s", e)
     
     # 4. Neo4j 清理
     try:
@@ -899,7 +899,7 @@ async def delete_memory_confirm(req: DeleteRequest, request: Request):
         if hook.enabled:
             hook.cleanup(req.memory_id)
     except Exception as e:
-        logger.debug("neo4j cleanup 失败: %s", e)
+        logger.warning("neo4j cleanup 失败: %s", e)
 
     # 5. FTS5 清理
     try:

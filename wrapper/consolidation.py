@@ -507,18 +507,19 @@ async def find_merge_groups(
 
     # 限制候选数量（O(n²) 复杂度，每轮处理 2000 条，Redis 游标轮转）
     MAX_CANDIDATES = 2000
-    if len(candidates) > MAX_CANDIDATES:
+    original_count = len(candidates)
+    if original_count > MAX_CANDIDATES:
         # 从 Redis 游标位置开始
         cursor = _get_cursor()
-        start = cursor % len(candidates)
+        start = cursor % original_count
         end = start + MAX_CANDIDATES
-        if end <= len(candidates):
+        if end <= original_count:
             candidates = candidates[start:end]
         else:
-            candidates = candidates[start:] + candidates[:end - len(candidates)]
-        _set_cursor(end % len(candidates))
+            candidates = candidates[start:] + candidates[:end - original_count]
+        _set_cursor(end % original_count)
         logger.info("consolidation: 候选 %d 条，从偏移 %d 取 %d 条（游标→%d）",
-                    len(items), start, len(candidates), end % len(candidates))
+                    len(items), start, len(candidates), end % original_count)
     else:
         _set_cursor(0)
 

@@ -223,7 +223,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="mem0x",
     description="自托管 AI 记忆增强服务",
-    version="0.1.30",
+    version="0.1.31",
     lifespan=lifespan,
 )
 
@@ -683,14 +683,14 @@ async def search_memory(req: SearchRequest, request: Request):
         try:
             loop = asyncio.get_running_loop()
             fts5 = get_fts5()
-            return await loop.run_in_executor(None, fts5.search, req.query, user_id, search_limit)
+            return await loop.run_in_executor(None, fts5.search, req.query, user_id, search_limit, True)
         except Exception as e:
             logger.debug("FTS5 search 失败: %s", e)
             return []
 
     semantic_results, keyword_results = await asyncio.gather(_qdrant_search(), _fts5_search())
 
-    # 合并：以 memory_id 为主键，FTS5 结果注入 bm25_score
+    # 合并：以 memory_id 为主键，FTS5 结果注入 bm25_score + snippet
     merged = {}
     for r in semantic_results:
         mid = r.get("id")
@@ -700,15 +700,16 @@ async def search_memory(req: SearchRequest, request: Request):
     for r in keyword_results:
         mid = r.get("memory_id")
         if mid and mid in merged:
-            # 已有 Qdrant 结果，注入 FTS5 BM25 分数
             merged[mid]["bm25_score"] = abs(r["score"])
+            if r.get("snippet"):
+                merged[mid]["snippet"] = r["snippet"]
         elif mid:
-            # FTS5 独有结果，构造标准格式
             merged[mid] = {
                 "id": mid,
                 "memory": r["content"],
                 "score": 0,
                 "bm25_score": abs(r["score"]),
+                "snippet": r.get("snippet", ""),
                 "metadata": {},
             }
 

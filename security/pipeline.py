@@ -148,8 +148,8 @@ async def safe_add(
     try:
         raw = await memory.search(content, filters=filters, top_k=5)
         shared_results = raw.get("results", []) if isinstance(raw, dict) else (raw if isinstance(raw, list) else [])
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("safe_add搜索失败（降级继续）: %s", e)
 
     # 3. 矛盾消解（规则驱动，零 LLM 成本，优先于 dedup）
     conflict_result = await detect_and_resolve(memory, content, filters=filters, pre_results=shared_results)
@@ -185,7 +185,7 @@ async def safe_add(
             logger.info("✅ pipeline.added_after_conflict: memory_id=%s", memory_id)
         except Exception as e:
             logger.warning("safe_add conflict后写入异常: %s", e)
-            memory_id = None
+            return {"action": "error", "reason": f"conflict write failed: {e}"}
         return {
             "action": "conflict", "resolved": conflict_result["resolved"],
             "conflicts": conflict_result["conflicts"], "memory_id": memory_id,
@@ -229,4 +229,10 @@ async def safe_add(
         return {"action": "added", "memory_id": memory_id}
     except Exception as e:
         logger.warning("safe_add 异常: %s", e)
+        # 入补偿队列，后台重试
+        try:
+            from security.compensation import enqueue
+            enqueue(content, filters, metadata)
+        except Exception:
+            pass
         return {"action": "error", "reason": str(e)}

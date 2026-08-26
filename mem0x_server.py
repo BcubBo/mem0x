@@ -184,9 +184,20 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("hot_archive 启动失败: %s", e)
 
+    # 启动补偿队列 worker
+    try:
+        from security.compensation import start as comp_start
+        from security.pipeline import safe_add as _safe_add_fn
+        comp_start(_safe_add_fn)
+        logger.info("补偿队列已启动")
+    except Exception as e:
+        logger.warning("补偿队列启动失败: %s", e)
+
     yield
 
     # 关闭
+    from security.compensation import stop as comp_stop
+    comp_stop()
     auto_expire.stop()
     consolidation.stop()
     evolve_mem.stop()

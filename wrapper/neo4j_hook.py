@@ -21,6 +21,20 @@ try:
 except ImportError:
     NEO4J_AVAILABLE = False
 
+import time as _time
+
+
+def _neo4j_retry(func, max_retries=3, base_delay=0.5):
+    """Neo4j 操作重试（指数退避）。"""
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise
+            _time.sleep(base_delay * (2 ** attempt))
+            logger.debug("neo4j retry %d/%d: %s", attempt + 1, max_retries, e)
+
 # ── 预编译正则 ──
 RE_EN_ENTITY = re.compile(r'\b[A-Z][a-zA-Z0-9_-]{2,}\b')
 RE_ZH_ENTITY = re.compile(r'[\u4e00-\u9fa5]{2,4}')
@@ -272,15 +286,15 @@ class Neo4jHook:
         entities = uncached_entities
         logger.debug("neo4j: %d entities after cache filter", len(entities))
 
-        # 写入实体（带 source_memory_id）
-        with self._driver.session() as session:
-            for entity in entities:
-                name = _sanitize_name(entity.get("name", ""))
-                etype = entity.get("type", "Entity")
-                if name:
-                    if etype not in ALLOWED_ENTITY_TYPES:
-                        etype = "Entity"
-                    try:
+        # 写入实体（带 source_memory_id + 重试）
+        def _do_write():
+            with self._driver.session() as session:
+                for entity in entities:
+                    name = _sanitize_name(entity.get("name", ""))
+                    etype = entity.get("type", "Entity")
+                    if name:
+                        if etype not in ALLOWED_ENTITY_TYPES:
+                            etype = "Entity"
                         session.run(
                             "MERGE (n {name: toLower($name)}) "
                             "SET n:$etype, n.original_name = $name, "
@@ -289,8 +303,10 @@ class Neo4jHook:
                             "  ELSE n.source_memory_id + ',' + $mid END",
                             name=name, etype=etype, mid=memory_id,
                         )
-                    except Exception as e:
-                        logger.debug("neo4j: entity creation failed: %s", e)
+        try:
+            _neo4j_retry(_do_write)
+        except Exception as e:
+            logger.debug("neo4j: entity creation failed (after retries): %s", e)
 
         if len(relations) > MAX_WRITE_RELATIONS:
             relations = relations[:MAX_WRITE_RELATIONS]

@@ -1,6 +1,0 @@
-Looking in indexes: https://pypi.tuna.tsinghua.edu.cn/simple
-Collecting fsrs
-  Downloading fsrs-6.3.2-py3-none-any.whl (22 kB)
-Requirement already satisfied: typing-extensions in /home/ubuntu/.hermes/hermes-agent/venv/lib/python3.11/site-packages (from fsrs) (4.15.0)
-Installing collected packages: fsrs
-Successfully installed fsrs-6.3.2

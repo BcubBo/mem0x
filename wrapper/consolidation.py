@@ -430,7 +430,7 @@ async def find_merge_groups(
     try:
         from wrapper.fetch_all import iter_batches
         items = []
-        async for batch in iter_batches(memory, filters=filters, batch_size=200, max_items=top_k):
+        async for batch in iter_batches(memory, filters=filters, batch_size=200, max_items=0):
             items.extend(batch)
     except Exception as e:
         logger.error("fetch_all 失败，fallback get_all: %s", e)
@@ -467,6 +467,12 @@ async def find_merge_groups(
 
     if len(candidates) < MIN_GROUP_SIZE:
         return []
+
+    # 限制候选数量（O(n²) 复杂度，上限 2000 防止计算爆炸）
+    MAX_CANDIDATES = 2000
+    if len(candidates) > MAX_CANDIDATES:
+        logger.info("consolidation: 候选 %d 条超过上限，截断到 %d", len(candidates), MAX_CANDIDATES)
+        candidates = candidates[:MAX_CANDIDATES]
 
     logger.info("consolidation: %d 候选记忆（总 %d，归档跳过 %d）",
                 len(candidates), len(items), len(items) - len(candidates))

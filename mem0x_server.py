@@ -223,7 +223,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="mem0x",
     description="自托管 AI 记忆增强服务",
-    version="0.1.32",
+    version="0.1.34",
     lifespan=lifespan,
 )
 
@@ -639,6 +639,17 @@ async def add_memory(req: AddRequest, request: Request):
             get_fts5().write(memory_id, content, user_id)
         except Exception as e:
             logger.warning("FTS5 write 失败: %s", e)
+
+        # spaCy NER → tags 写入 Qdrant payload
+        try:
+            from wrapper.spacy_ner import extract_tags
+            tags = extract_tags(content)
+            if tags:
+                qc = memory.vector_store.client
+                qc.set_payload("mem0", payload={"tags": tags}, points=[memory_id])
+                logger.debug("spaCy NER: id=%s tags=%s", memory_id[:12], tags)
+        except Exception as e:
+            logger.debug("spaCy NER 失败: %s", e)
 
     elapsed_ms = int((time.time() - start) * 1000)
     result["elapsed_ms"] = elapsed_ms

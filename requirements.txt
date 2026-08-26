@@ -9,3 +9,4 @@ fastembed
 spacy
 redis>=5.0.0
 fsrs>=6.0.0
+spacy-pkuseg>=0.0.27,<0.1.0

@@ -93,7 +93,7 @@ def register(
     try:
         conn.execute(
             "INSERT OR REPLACE INTO salience (memory_id, salience, last_access, access_count, created_at, content_preview) VALUES (?,?,?,?,?,?)",
-            (memory_id, initial_salience, now, 0, now, content_preview[:200]),
+            (memory_id, initial_salience, now, 0, now, content_preview),
         )
         conn.commit()
     except Exception as e:

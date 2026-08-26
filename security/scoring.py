@@ -1,8 +1,8 @@
-"""五维打分 + Ignition — 搜索结果后处理引擎。
+"""六维打分 + Ignition — 搜索结果后处理引擎。
 
 
 功能：
-1. 五维打分（向量 + BM25 + 时间衰减 + 可靠性 + 热度）
+1. 六维打分（向量 + BM25 + 时间衰减 + 可靠性 + 热度）
 2. Ignition：相似度 >0.85 的记忆跳过衰减，直达返回
 3. 去重：相同文本记忆去重
 """
@@ -126,7 +126,7 @@ def score_and_rank(
     limit: int = 10,
     config: Optional[Dict[str, Any]] = None,
 ) -> List[dict]:
-    """五维打分 + Ignition + 去重。
+    """六维打分 + Ignition + 去重。
 
     返回排好序的结果列表，每条加 _hybrid_score 和 _time_decay 字段。
     权重优先级：weights 参数 > config.json scoring.weights > DEFAULT_WEIGHTS

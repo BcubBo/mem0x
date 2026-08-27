@@ -606,7 +606,7 @@ async def add_memory(req: AddRequest, request: Request):
 
         # 版本追踪：保存初始版本
         try:
-            await loop.run_in_executor(None, version_tracker.save_version, memory_id, content, "create")
+            await loop.run_in_executor(None, version_tracker.save_version, memory_id, content, None, "create")
         except Exception as e:
             logger.warning("version_tracker init 失败: %s", e)
 

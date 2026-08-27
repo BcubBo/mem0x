@@ -16,6 +16,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
+from .index_sync import sync_after_delete
+
 logger = logging.getLogger("mem0x.auto_expire")
 
 # 默认扫描间隔（秒）

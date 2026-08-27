@@ -77,6 +77,8 @@ class SearchRequest(BaseModel):
     before: Optional[str] = Field(default=None, description="时间上限 ISO 格式")
     after: Optional[str] = Field(default=None, description="时间下限 ISO 格式")
     include_archived: bool = Field(default=False, description="是否包含归档记忆")
+    tags: Optional[List[str]] = Field(default=None, description="按 tags 过滤（metadata.tags）")
+    tags_match: str = Field(default="any", description="tags 匹配模式: any=任一匹配, all=全部匹配")
 
 
 class DeleteRequest(BaseModel):
@@ -745,6 +747,20 @@ async def search_memory(req: SearchRequest, request: Request):
     # 时间窗口过滤
     if req.before or req.after:
         results = _filter_by_time(results, req.before, req.after)
+
+    # tags 过滤
+    if req.tags:
+        tag_set = set(t.lower() for t in req.tags)
+        if req.tags_match == "all":
+            results = [
+                r for r in results
+                if tag_set <= set(t.lower() for t in (r.get("metadata", {}).get("tags") or []))
+            ]
+        else:  # "any"
+            results = [
+                r for r in results
+                if tag_set & set(t.lower() for t in (r.get("metadata", {}).get("tags") or []))
+            ]
 
     # 5维打分
     try:

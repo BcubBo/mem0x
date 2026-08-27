@@ -7,11 +7,13 @@
 ## 架构
 
 ```
-Hermes Agent (插件层) → mem0x API (HTTP) → Qdrant (向量存储) + Neo4j (知识图谱)
+Hermes Agent (插件层) → mem0x API (HTTP) → Qdrant (向量存储)
                                          ↓
                                     Redis (速率限制 + 游标持久化)
                                          ↓
-                                    SQLite (FTS5全文索引 + salience + version_tracker)
+                                    SQLite (FTS5全文索引 + salience + version_tracker + BM25 IDF)
+                                         ↓
+                                    Embedding 集群 (nginx:28770 → n1-n5 bge-m3 CPU)
 ```
 
 ### 核心组件
@@ -20,9 +22,9 @@ Hermes Agent (插件层) → mem0x API (HTTP) → Qdrant (向量存储) + Neo4j 
 |------|------|
 | `mem0x_server.py` | FastAPI 主服务，暴露 `/api` `/evolve` `/consolidate` 端点 |
 | `security/pipeline.py` | 安全写入链路：注入防御 → PII脱敏 → 去重 → 矛盾消解 → 语义判重 |
-| `security/conflict_resolver.py` | 矛盾消解：规则驱动 + LLM 并行投票 |
+| `security/conflict_resolver.py` | 矛盾消解：规则驱动 + 单次 LLM 判断（去投票优化） |
 | `security/compensation.py` | 补偿队列：写入失败自动重试，SQLite 持久化 |
-| `security/circuit_breaker.py` | 断路器：Qdrant/Neo4j/LLM 故障隔离 |
+| `security/circuit_breaker.py` | 断路器：Qdrant/LLM 故障隔离 |
 | `wrapper/fetch_all.py` | 分页获取 + 多用户发现（绕过 mem0 get_all 限制） |
 | `wrapper/index_sync.py` | 跨存储同步：Qdrant → FTS5/salience/version_tracker |
 | `wrapper/fsrs_bridge.py` | FSRS-6 质量评估：标准间隔重复算法 |
@@ -31,6 +33,17 @@ Hermes Agent (插件层) → mem0x API (HTTP) → Qdrant (向量存储) + Neo4j 
 | `wrapper/auto_expire.py` | 过期清理：lane TTL + expires 标记 |
 
 ## 版本历史
+
+### v0.1.43 (2026-08-27)
+- **Embedding 本地化**：5节点 bge-m3 CPU 集群 + nginx 负载均衡（端口 28770→8775→n1-n5）
+- **搜索过滤放宽**：agent_id 从必须匹配降级为可选，修复历史数据搜索返回 0 条
+- **矛盾消解去投票**：并行投票3次→单次 LLM 判断，add 延迟 ~90s→~24s
+- **BM25 IDF 持久化**：SQLite 存储，重启不丢失 sparse search 质量
+- **FSRS card 持久化**：搜索时更新的遗忘模型状态写回 Qdrant
+- **async 改造**：16 处同步调用包装 run_in_executor，消除事件循环阻塞
+- **P0/P1/P2/P3 全量修复**：27项审计问题清零（auto_expire NameError、死代码清理、热度去重、LLM合并、FSRS统一等）
+- **Docker 重构**：单 compose 拆分为 redis/embedding/API 三个独立文件
+- **version_tracker 参数修正**：save_version 调用参数顺序错误修复
 
 ### v0.1.27 (2026-08-26)
 - **IndexSync 跨存储同步**：删除/合并记忆后自动同步 FTS5/salience
@@ -52,15 +65,23 @@ Hermes Agent (插件层) → mem0x API (HTTP) → Qdrant (向量存储) + Neo4j 
 - Token 增强：审计日志 + 一次性 + api_key 绑定 + 撤销
 
 ### v0.1.16 (2026-08-23)
-- 矛盾消解优化：LLM 并行投票（可配置 `num_votes`）
+- 矛盾消解优化：单次 LLM 判断（去投票，减少 LLM 调用）
 - 矛盾消解配置化：`conflict.llm.config`
 
 ## 部署
 
-### Docker Compose
+### Docker Compose（三文件独立编排）
 
 ```bash
 cd ~/.mem0x
+
+# 1. 启动 Redis
+sudo docker compose -f docker-compose.redis.yml up -d
+
+# 2. 启动 Embedding 集群（nginx + n1-n5）
+sudo docker compose -f docker-compose.embedding-nginx.yml up -d
+
+# 3. 启动 API 服务
 sudo docker compose -f docker-compose.mem0x.yml up -d
 ```
 
@@ -98,7 +119,7 @@ sudo docker compose -f docker-compose.mem0x.yml up -d
   "conflict": {
     "llm": {
       "config": {
-        "num_votes": 2,
+        "num_votes": 1,
         "max_llm_calls": 1
       }
     }
@@ -172,7 +193,7 @@ cd /home/ubuntu/workspace/mem0xAPI
 python3 -m py_compile mem0x_server.py
 
 # 构建镜像
-sudo docker build --no-cache -t mem0xapi:v0.1.25 .
+sudo docker build --no-cache -t mem0xapi:v0.1.43 .
 
 # 部署
 cd ~/.mem0x

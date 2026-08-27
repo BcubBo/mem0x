@@ -73,7 +73,7 @@ async def analyze_memory_quality(memory, user_id: str = "bo", agent_id: str = "h
         entity_density = min(len(entities) / max(len(text), 1) * 10, 1.0)
         
         # 关键词密度（技术术语）
-        keywords = ['mem0', 'Qdrant', 'Neo4j', 'Docker', 'API', 'plugin', 'config',
+        keywords = ['mem0', 'Qdrant', 'Docker', 'API', 'plugin', 'config',
                     '插件', '配置', '测试', '部署', '修复', '优化']
         keyword_count = sum(1 for kw in keywords if kw.lower() in text.lower())
         keyword_density = min(keyword_count / 5, 1.0)
@@ -203,7 +203,7 @@ async def run_evolve_cycle(memory, user_id: str = "bo",
                         created_at = item.get("created_at")
                         mem_id = item.get("id")
 
-                        if not mem_id or mem_id.startswith("neo4j:"):
+                        if not mem_id:
                             continue
 
                         # FSRS 质量评估

@@ -271,7 +271,7 @@ def _extract_keywords(text: str) -> Set[str]:
     """从文本中提取关键词（用于实体聚类）。"""
     keywords = set()
 
-    # 英文单词（大驼峰或全大写，如 Qdrant, Neo4j, docker）
+    # 英文单词（大驼峰或全大写，如 Qdrant, Docker）
     for m in re.finditer(r'\b[A-Za-z][A-Za-z0-9_-]{2,}\b', text):
         w = m.group()
         if w.lower() not in ('the', 'and', 'for', 'with', 'from', 'this', 'that', 'are', 'was'):
@@ -720,7 +720,6 @@ async def run_consolidation_cycle(
     1. find_merge_groups — 聚类（附带 avg_cosine）
     2. 按 avg_cosine 分层：≥0.95 选最佳、0.88-0.95 关键词拼接、<0.88 跳过
     3. 写入合并结果，归档旧碎片，迁移 metadata
-    4. 清理 Neo4j
     """
     if not _merge_lock.acquire(blocking=False):
         logger.info("consolidation: 另一轮正在执行，跳过")

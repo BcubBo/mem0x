@@ -550,11 +550,11 @@ async def _detect_and_resolve_inner(memory, new_text: str, filters: dict, auto_a
                 break
 
             llm_call_count += 1
-            logger.info("调用 LLM 并行投票 (%d/%d): new=%s..., old=%s...", llm_call_count, MAX_LLM_CALLS, new_text[:30], old_text[:30])
+            logger.info("调用 LLM 单次判断 (%d/%d): new=%s..., old=%s...", llm_call_count, MAX_LLM_CALLS, new_text[:30], old_text[:30])
             loop = asyncio.get_running_loop()
             llm_result = await loop.run_in_executor(
                 None,
-                lambda: _llm_judge_parallel(new_text, old_text, old_meta=meta, old_created_at=old_created_at, num_votes=NUM_VOTES),
+                lambda: _llm_judge_contradiction(new_text, old_text, old_meta=meta, old_created_at=old_created_at),
             )
             logger.info("LLM 返回结果: %s", llm_result)
             if llm_result and llm_result.get("contradicts"):

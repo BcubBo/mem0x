@@ -73,7 +73,6 @@ def _override_from_env(cfg: Dict):
         "BO_MEM0_EMBEDDER_API_KEY": ("mem0", "embedder", "config", "api_key"),
         "BO_MEM0_QDRANT_API_KEY": ("mem0", "vector_store", "config", "api_key"),
         "BO_MEM0_RERANK_API_KEY": ("rerank", "config", "api_key"),
-        "BO_MEM0_NEO4J_PASSWORD": ("neo4j", "password"),
     }
     for env_key, path in env_map.items():
         val = os.environ.get(env_key)

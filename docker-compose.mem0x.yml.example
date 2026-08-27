@@ -1,0 +1,60 @@
+# mem0x 记忆增强服务
+# 使用方法:
+#   1. cp docker-compose.mem0x.yml.example docker-compose.mem0x.yml
+#   2. cp config-compose.json.example config-compose.json（填入你的 API Key）
+#   3. docker network create mem0x-net（首次需要）
+#   4. mkdir -p ./data
+#   5. docker compose -f docker-compose.mem0x.yml up -d
+#
+# 前置条件：
+#   - 先启动 Qdrant: cp docker-compose.mem0x-qdrant.yml.example docker-compose.mem0x-qdrant.yml && docker compose -f docker-compose.mem0x-qdrant.yml up -d
+#   - 先启动 Neo4j:  cp docker-compose.mem0x-neo4j.yml.example docker-compose.mem0x-neo4j.yml && docker compose -f docker-compose.mem0x-neo4j.yml up -d（可选）
+
+services:
+  mem0x:
+    image: mem0xapi:v0.1.28
+    container_name: mem0xAPI
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:28768:28768"
+    volumes:
+      - ./data:/app/data
+      - ./data/fastembed:/tmp/fastembed_cache
+      - ./config-compose.json:/app/config.json:ro
+    environment:
+      MEM0X_CONFIG: /app/config.json
+      MEM0_TELEMETRY: "False"
+      DO_NOT_TRACK: "1"
+      FASTEMBED_CACHE_PATH: "/tmp/fastembed_cache"
+      HF_HUB_OFFLINE: "1"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - mem0x-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:28768/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  redis:
+    image: redis:7-alpine
+    container_name: mem0x-redis
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:28769:6379"
+    volumes:
+      - ./redis-data:/data
+    networks:
+      - mem0x-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+networks:
+  mem0x-net:
+    external: true

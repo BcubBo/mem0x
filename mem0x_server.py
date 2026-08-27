@@ -47,7 +47,6 @@ from wrapper import core_memory
 from wrapper import evolve_mem
 from wrapper import reflect
 from wrapper import hot_archive
-from wrapper import graph_export
 from wrapper import version_tracker
 from security.pipeline import safe_add
 from security.scoring import score_and_rank
@@ -213,7 +212,7 @@ async def _update_usage_stats_sync(memory_instance, memory_ids: list):
     """批量更新被搜索记忆的使用维度字段（并发执行，减少 N+1）。"""
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc).isoformat()
-    valid_ids = [mid for mid in memory_ids if mid and not mid.startswith("neo4j:")]
+    valid_ids = [mid for mid in memory_ids if mid]
     if not valid_ids:
         return
 
@@ -659,10 +658,10 @@ async def search_memory(req: SearchRequest, request: Request):
         sparse_enc = get_bm25_encoder()
         sparse_vec = sparse_enc.encode_query(req.query)
 
-        # Qdrant filter
+        # Qdrant filter — 只匹配 user_id，agent_id 可选
+        # 历史数据部分 agent_id=N/A，must 过滤会漏掉这些数据
         qfilt = QFilter(must=[
             FieldCondition(key="user_id", match=MatchValue(value=user_id)),
-            FieldCondition(key="agent_id", match=MatchValue(value=agent_id)),
         ])
 
         # hybrid search: dense + sparse → RRF fusion
@@ -808,7 +807,7 @@ async def search_memory(req: SearchRequest, request: Request):
 
 
     # 收集需要更新的记忆 ID
-    vector_memory_ids = [r["id"] for r in results if r.get("id") and not r["id"].startswith("neo4j:")]
+    vector_memory_ids = [r["id"] for r in results if r.get("id") ]
     if vector_memory_ids:
         await _update_usage_stats_sync(memory, vector_memory_ids)
 
@@ -1306,26 +1305,6 @@ async def rollback_version(memory_id: str, req: RollbackRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Rollback failed: {e}")
-
-
-# ── Graph Export 端点 ──
-
-@app.get("/graph/export", dependencies=[Depends(verify_api_key), Depends(rate_limit)])
-async def export_graph(
-    limit: int = 200,
-    depth: int = 2,
-    entity_type: Optional[str] = None,
-    center: Optional[str] = None,
-):
-    """导出知识图谱数据（节点+边）。
-
-    用于 Hermes 搜索增强或前端可视化。
-    - 全局导出：不传 center，按连接数排序取 top-N
-    - 子图导出：传 center，从中心节点展开 depth 层
-    """
-    return graph_export.export_graph(
-        limit=limit, depth=depth, entity_type=entity_type, center=center,
-    )
 
 
 # ── Hot Archive 端点 ──

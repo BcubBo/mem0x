@@ -36,12 +36,6 @@
       "openai_base_url": "YOUR_RERANK_BASE_URL"
     }
   },
-  "neo4j": {
-    "enabled": true,
-    "uri": "bolt://neo4j:7687",
-    "username": "neo4j",
-    "password": "YOUR_NEO4J_PASSWORD"
-  },
   "server": {
     "host": "0.0.0.0",
     "port": 28768,
@@ -50,11 +44,11 @@
   "scoring": {
     "weights": {
       "vector": 0.38,
-      "bm25": 0.00,
+      "bm25": 0.0,
       "time": 0.15,
       "reliability": 0.1,
       "heat": 0.17,
-      "confidence": 0.20
+      "confidence": 0.2
     },
     "recency_lambda": 0.05,
     "rerank_weight": 0.4,

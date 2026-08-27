@@ -1,0 +1,24 @@
+# Qdrant 向量数据库（mem0x 核心向量存储）
+# 使用方法:
+#   1. cp docker-compose.mem0x-qdrant.yml.example docker-compose.mem0x-qdrant.yml
+#   2. docker network create mem0x-net（首次需要）
+#   3. docker compose -f docker-compose.mem0x-qdrant.yml up -d
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    restart: unless-stopped
+    ports:
+      - "26333:6333"
+      - "26334:6334"
+    volumes:
+      - ./qdrant-data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__API_KEY: YOUR_QDRANT_API_KEY
+    networks:
+      - mem0x-net
+
+networks:
+  mem0x-net:
+    external: true

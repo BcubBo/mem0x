@@ -1,4 +1,4 @@
-"""简单断路器：追踪外部服务（Qdrant/Neo4j/LLM）的健康状态。
+"""简单断路器：追踪外部服务（Qdrant/LLM）的健康状态。
 
 状态机：CLOSED → (连续失败≥阈值) → OPEN → (超时后) → HALF_OPEN → (成功) → CLOSED
 """
@@ -78,5 +78,4 @@ class CircuitBreaker:
 
 # 全局断路器实例
 qdrant_breaker = CircuitBreaker("qdrant", failure_threshold=5, recovery_timeout=30)
-neo4j_breaker = CircuitBreaker("neo4j", failure_threshold=5, recovery_timeout=30)
 llm_breaker = CircuitBreaker("llm", failure_threshold=3, recovery_timeout=60)

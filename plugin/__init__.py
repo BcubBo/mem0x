@@ -210,7 +210,7 @@ class Mem0RemoteProvider(MemoryProvider):
         return ""
 
     def prefetch(self, query: str, session_id: str = "", **kwargs) -> str:
-        """预取记忆（注入 system prompt）。包含向量检索 + Neo4j 图谱联想。"""
+        """预取记忆（注入 system prompt）。"""
         client = _get_client()
         result = client.call("search", {"query": query, "limit": 8, "rerank": True})
         if not result:
@@ -220,25 +220,12 @@ class Mem0RemoteProvider(MemoryProvider):
         if not results:
             return ""
 
-        # 分离向量结果和 Neo4j 联想结果
-        vector_results = [r for r in results if not r.get("id", "").startswith("neo4j:")]
-        neo4j_results = [r for r in results if r.get("id", "").startswith("neo4j:")]
-
         lines = []
-        # 向量结果（取 top5）
-        for r in vector_results[:5]:
+        for r in results[:5]:
             mem = r.get("memory", "")
             score = r.get("score", 0)
             if mem:
                 lines.append(f"- {mem} (score: {score:.2f})")
-
-        # Neo4j 联想结果（取 top3，作为补充上下文）
-        if neo4j_results:
-            lines.append("\n[关联实体]")
-            for r in neo4j_results[:3]:
-                mem = r.get("memory", "")
-                if mem:
-                    lines.append(f"- {mem}")
 
         return "\n".join(lines)
 

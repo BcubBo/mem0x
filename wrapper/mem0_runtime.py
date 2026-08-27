@@ -154,18 +154,25 @@ def rerank(
         return []
 
     provider = rc.get("provider", "siliconflow").lower()
+    t0 = time.time()
     try:
         if provider in ("siliconflow", "sf", "openai_compatible", "openai"):
-            return _rerank_openai_compatible(query, documents, top_n, rc)
+            results = _rerank_openai_compatible(query, documents, top_n, rc)
         elif provider == "jina":
-            return _rerank_jina(query, documents, top_n, rc)
+            results = _rerank_jina(query, documents, top_n, rc)
         elif provider == "cohere":
-            return _rerank_cohere(query, documents, top_n, rc)
+            results = _rerank_cohere(query, documents, top_n, rc)
         else:
             logger.warning("未知 rerank provider: %s", provider)
             return []
+        elapsed = (time.time() - t0) * 1000
+        logger.info("rerank: provider=%s docs=%d top_n=%d results=%d %.0fms",
+                     provider, len(documents), top_n, len(results), elapsed)
+        return results
     except Exception as e:
-        logger.warning("rerank 失败: %s", e)
+        elapsed = (time.time() - t0) * 1000
+        logger.warning("rerank 失败: provider=%s docs=%d error=%s %.0fms",
+                       provider, len(documents), e, elapsed)
         return []
 
 

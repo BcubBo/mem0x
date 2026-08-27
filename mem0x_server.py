@@ -679,57 +679,86 @@ async def search_memory(req: SearchRequest, request: Request):
     # 构建 filters（mem0 2.0+ 必须有 user_id/agent_id/run_id 之一）
     filters = {"user_id": user_id, "agent_id": agent_id}
 
-    # 并行检索：Qdrant 向量 + FTS5 关键词
+    # Qdrant hybrid search（dense + sparse RRF 融合）
     search_limit = 20
     import asyncio
     from wrapper.fts5_store import get_fts5
+    from wrapper.sparse_vector import get_bm25_encoder
+    from qdrant_client.models import Filter as QFilter, FieldCondition, MatchValue
+    from qdrant_client.models import Prefetch, FusionQuery, Fusion
+    loop = asyncio.get_running_loop()
 
-    async def _qdrant_search():
-        try:
-            raw = await memory.search(req.query, filters=filters, top_k=search_limit)
-            return raw.get("results", []) if isinstance(raw, dict) else (raw if isinstance(raw, list) else [])
-        except Exception as e:
-            logger.warning("mem0 search 失败: %s", e)
-            return []
+    try:
+        # dense embedding
+        dense_vec = await loop.run_in_executor(
+            None, memory.embedding_model.embed, req.query)
 
-    async def _fts5_search():
-        try:
-            loop = asyncio.get_running_loop()
-            fts5 = get_fts5()
-            return await loop.run_in_executor(None, fts5.search, req.query, user_id, search_limit, True)
-        except Exception as e:
-            logger.debug("FTS5 search 失败: %s", e)
-            return []
+        # sparse BM25
+        sparse_enc = get_bm25_encoder()
+        sparse_vec = sparse_enc.encode_query(req.query)
 
-    semantic_results, keyword_results = await asyncio.gather(_qdrant_search(), _fts5_search())
+        # Qdrant filter
+        qfilt = QFilter(must=[
+            FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+            FieldCondition(key="agent_id", match=MatchValue(value=agent_id)),
+        ])
 
-    # 合并：以 memory_id 为主键，FTS5 结果注入 bm25_score + snippet
-    merged = {}
-    for r in semantic_results:
-        mid = r.get("id")
-        if mid:
-            merged[mid] = r
+        # hybrid search: dense + sparse → RRF fusion
+        qc = memory.vector_store.client
+        hybrid_result = await loop.run_in_executor(
+            None,
+            lambda: qc.query_points(
+                collection_name="mem0",
+                query=FusionQuery(fusion=Fusion.RRF),
+                prefetch=[
+                    Prefetch(query=dense_vec, using="", limit=search_limit),
+                    Prefetch(query=sparse_vec, using="bm25", limit=search_limit),
+                ],
+                limit=search_limit,
+                query_filter=qfilt,
+                with_payload=["data", "metadata", "tags", "hash",
+                              "created_at", "updated_at", "user_id", "agent_id",
+                              "attributed_to", "search_count", "last_accessed_at"],
+            ))
 
-    for r in keyword_results:
-        mid = r.get("memory_id")
-        if mid and mid in merged:
-            merged[mid]["bm25_score"] = abs(r["score"])
-            if r.get("snippet"):
-                merged[mid]["snippet"] = r["snippet"]
-        elif mid:
-            merged[mid] = {
-                "id": mid,
-                "memory": r["content"],
-                "score": 0,
-                "bm25_score": abs(r["score"]),
-                "snippet": r.get("snippet", ""),
-                "metadata": {},
-            }
+        # 转为统一格式
+        results = []
+        for pt in hybrid_result.points:
+            payload = pt.payload or {}
+            results.append({
+                "id": pt.id,
+                "memory": payload.get("data", ""),
+                "score": pt.score,
+                "metadata": {k: v for k, v in payload.items()
+                             if k not in ("data", "text_lemmatized", "hash",
+                                          "created_at", "updated_at")},
+                "hash": payload.get("hash", ""),
+                "created_at": payload.get("created_at"),
+                "updated_at": payload.get("updated_at"),
+                "user_id": payload.get("user_id", ""),
+                "agent_id": payload.get("agent_id", ""),
+                "attributed_to": payload.get("attributed_to", ""),
+            })
 
-    results = list(merged.values())
-    logger.info("🔍 search merge: semantic=%d, keyword=%d, merged=%d, with_bm25=%d",
-                len(semantic_results), len(keyword_results), len(results),
-                sum(1 for r in results if r.get("bm25_score") is not None))
+        logger.info("🔍 search hybrid: query=%s, results=%d", req.query[:30], len(results))
+    except Exception as e:
+        logger.warning("hybrid search 失败，降级到 FTS5: %s", e)
+        results = []
+
+    # FTS5 补充 snippet（高亮）
+    try:
+        fts5 = get_fts5()
+        fts5_results = await loop.run_in_executor(
+            None, fts5.search, req.query, user_id, search_limit, True)
+        snippet_map = {r["memory_id"]: r for r in fts5_results}
+        for r in results:
+            fts = snippet_map.get(r["id"])
+            if fts:
+                r["bm25_score"] = abs(fts["score"])
+                if fts.get("snippet"):
+                    r["snippet"] = fts["snippet"]
+    except Exception as e:
+        logger.debug("FTS5 snippet 失败: %s", e)
 
     # 过滤软删除的记忆（metadata.deleted_at 存在则跳过）
     results = [

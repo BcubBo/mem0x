@@ -1,5 +1,7 @@
-# mem0x 记忆增强服务
-# 启动: sudo docker compose -f docker-compose.mem0x.yml up -d
+# mem0x API 服务
+# 启动顺序: docker compose -f docker-compose.redis.yml up -d
+#           docker compose -f docker-compose.embedding.yml up -d
+#           docker compose -f docker-compose.mem0x.yml up -d
 
 services:
   mem0x:
@@ -18,11 +20,6 @@ services:
       DO_NOT_TRACK: "1"
       FASTEMBED_CACHE_PATH: "/tmp/fastembed_cache"
       HF_HUB_OFFLINE: "1"
-    depends_on:
-      redis:
-        condition: service_healthy
-      embedding:
-        condition: service_healthy
     networks:
       - mem0x-net
     healthcheck:
@@ -30,40 +27,6 @@ services:
       interval: 30s
       timeout: 5s
       start_period: 10s
-      retries: 3
-
-  embedding:
-    build: /home/ubuntu/workspace/.mem0x/embedding-service
-    container_name: mem0x-embedding
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:28770:28770"
-    environment:
-      EMBEDDING_MODEL: "BAAI/bge-m3"
-      HF_HUB_OFFLINE: "1"
-    networks:
-      - mem0x-net
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:28770/health"]
-      interval: 30s
-      timeout: 5s
-      start_period: 60s
-      retries: 3
-
-  redis:
-    image: redis:7-alpine
-    container_name: mem0x-redis
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:28769:6379"
-    volumes:
-      - /home/ubuntu/workspace/.mem0x/redis-data:/data
-    networks:
-      - mem0x-net
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
       retries: 3
 
 networks:

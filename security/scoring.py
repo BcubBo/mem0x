@@ -28,7 +28,6 @@ IGNITION_MAX = 8
 
 DEFAULT_WEIGHTS = {
     "vector": 0.38,
-    "bm25": 0.00,
     "time": 0.15,
     "reliability": 0.10,
     "heat": 0.17,
@@ -57,16 +56,6 @@ def _normalize_score(score: Any) -> float:
         return 0.0
 
 
-def _calc_bm25(query: str, text: str) -> float:
-    """轻量词频覆盖度打分。"""
-    if not query or not text:
-        return 0.0
-    q_tokens = set(re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z0-9]+", query.lower()))
-    if not q_tokens:
-        return 0.0
-    t_lower = text.lower()
-    hits = sum(1 for tok in q_tokens if tok in t_lower)
-    return round(hits / len(q_tokens), 4)
 
 
 def _extract_timestamp(item: dict) -> float:
@@ -161,10 +150,6 @@ def score_and_rank(
         # 向量分
         vec_s = _normalize_score(item.get("score", 0) or item.get("rerank_score", 0))
 
-        # BM25 分
-        content = str(item.get("memory") or item.get("text") or "")
-        bm25_s = _normalize_score(item.get("bm25_score")) if item.get("bm25_score") is not None else _calc_bm25(query, content)
-
         # 时间衰减分
         created_ts = _extract_timestamp(item)
         time_s = _compute_time_decay(created_ts, now_ts, recency_lambda=_lam)
@@ -186,7 +171,6 @@ def score_and_rank(
         # 综合得分
         base_score = (
             w["vector"] * vec_s
-            + w["bm25"] * bm25_s
             + w["time"] * time_s
             + w["reliability"] * reliability_s
             + w["heat"] * heat_s

@@ -83,7 +83,7 @@ def _get_qdrant_client():
     return client, collection
 
 
-def run_expire_cycle(neo4j_hook=None, user_id: str = "bo") -> int:
+def run_expire_cycle(user_id: str = "bo") -> int:
     """执行一轮过期清理。
 
     直接用 Qdrant scroll + filter，零 embedding 调用。
@@ -157,12 +157,6 @@ def run_expire_cycle(neo4j_hook=None, user_id: str = "bo") -> int:
                 except Exception as e:
                     logger.warning("删除失败 %s: %s", point.id, e)
 
-                # Neo4j 同步清理
-                if neo4j_hook and neo4j_hook.enabled:
-                    try:
-                        neo4j_hook.cleanup(point.id)
-                    except Exception as e:
-                        logger.debug("Neo4j cleanup 失败 %s: %s", point.id, e)
 
             if next_offset is None:
                 break
@@ -181,13 +175,6 @@ def _background_loop(interval: int = DEFAULT_INTERVAL):
     logger.info("auto_expire 后台线程启动，间隔 %ds", interval)
 
     from wrapper.evolve_lock import background_tasks_lock
-    neo4j_hook = None
-    try:
-        from wrapper.neo4j_hook import get_hook
-        from wrapper.index_sync import sync_after_delete
-        neo4j_hook = get_hook()
-    except Exception:
-        pass
 
     while _running:
         try:
@@ -207,7 +194,7 @@ def _background_loop(interval: int = DEFAULT_INTERVAL):
 
             total_deleted = 0
             for uid in user_ids:
-                deleted = run_expire_cycle(neo4j_hook=neo4j_hook, user_id=uid)
+                deleted = run_expire_cycle(user_id=uid)
                 total_deleted += deleted
             if total_deleted > 0:
                 logger.info("本轮清理 %d 条过期记忆（%d 个用户）", total_deleted, len(user_ids))

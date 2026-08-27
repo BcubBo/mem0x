@@ -168,7 +168,7 @@ async def analyze_memory_quality(memory, user_id: str = "bo", agent_id: str = "h
     return stats
 
 
-async def run_evolve_cycle(memory, neo4j_hook=None, user_id: str = "bo",
+async def run_evolve_cycle(memory, user_id: str = "bo",
                     agent_id: str = "hermes") -> Dict:
     """执行一轮自进化，返回优化结果。"""
     result = {"analyzed": 0, "optimized": 0, "pruned": 0}
@@ -231,11 +231,6 @@ async def run_evolve_cycle(memory, neo4j_hook=None, user_id: str = "bo",
                                 await memory.delete(mem_id)
                                 sync_after_delete(mem_id, user_id)
                                 result["pruned"] += 1
-                                if neo4j_hook and neo4j_hook.enabled:
-                                    try:
-                                        neo4j_hook.cleanup(mem_id)
-                                    except Exception:
-                                        pass
                             except Exception as e:
                                 logger.debug("清理失败 %s: %s", mem_id[:16], e)
             except asyncio.TimeoutError:
@@ -260,12 +255,6 @@ def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
     from wrapper.fetch_all import get_distinct_user_ids
     logger.info("evolve_mem 后台线程启动，间隔 %ds", interval)
 
-    from wrapper.neo4j_hook import get_hook
-    neo4j_hook = None
-    try:
-        neo4j_hook = get_hook()
-    except Exception:
-        pass
 
     while _running:
         try:
@@ -281,7 +270,7 @@ def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
                     logger.info("evolve_mem: 处理 %d 个用户", len(user_ids))
                     total_pruned = 0
                     for uid in user_ids:
-                        result = asyncio.run(run_evolve_cycle(memory, neo4j_hook=neo4j_hook, user_id=uid))
+                        result = asyncio.run(run_evolve_cycle(memory, user_id=uid))
                         total_pruned += result.get("pruned", 0)
                     if total_pruned > 0:
                         logger.info("本轮自进化: 清理 %d 条（%d 个用户）", total_pruned, len(user_ids))

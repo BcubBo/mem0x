@@ -41,7 +41,6 @@ from pydantic import BaseModel, Field
 # ── 延迟导入（配置加载后才初始化） ──
 from wrapper.mem0_runtime import get_memory, load_config
 from wrapper.salience import boost_salience_for_results, register as salience_register, delete as salience_delete
-from wrapper.neo4j_hook import get_hook
 from wrapper import auto_expire
 from wrapper import consolidation
 from wrapper import core_memory
@@ -122,7 +121,7 @@ def _extract_identity(request: Request) -> dict:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """启动时初始化 mem0 + Neo4j + auto_expire，关闭时清理。"""
+    """启动时初始化 mem0 + auto_expire，关闭时清理。"""
     logger.info("mem0x 启动中...")
     config = load_config()
 
@@ -132,16 +131,6 @@ async def lifespan(app: FastAPI):
         _load_pipeline_redact(config)
     except Exception as e:
         logger.debug("pipeline redact_names 加载失败: %s", e)
-    try:
-        from wrapper.neo4j_hook import load_redact_names as _load_neo4j_redact
-        _load_neo4j_redact(config)
-    except Exception as e:
-        logger.debug("neo4j redact_names 加载失败: %s", e)
-    try:
-        from wrapper.neo4j_hook import load_known_entities as _load_entities
-        _load_entities(config)
-    except Exception as e:
-        logger.debug("neo4j known_entities 加载失败: %s", e)
 
     # 初始化 mem0 单例
     try:
@@ -150,15 +139,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error("mem0 初始化失败: %s", e)
 
-    # 初始化 Neo4j
-    try:
-        hook = get_hook()
-        if hook.enabled:
-            logger.info("Neo4j 已连接")
-        else:
-            logger.info("Neo4j 未启用")
-    except Exception as e:
-        logger.warning("Neo4j 初始化失败: %s", e)
 
     # 启动 auto_expire 后台线程
     try:
@@ -214,11 +194,6 @@ async def lifespan(app: FastAPI):
     evolve_mem.stop()
     reflect.stop()
     hot_archive.stop()
-    try:
-        hook = get_hook()
-        hook.shutdown()
-    except Exception:
-        pass
     logger.info("mem0x 已关闭")
 
 
@@ -552,7 +527,6 @@ async def health(request: Request):
     """健康检查。未认证时只返回 status，不暴露内部状态。"""
     from wrapper.mem0_runtime import _memory_instance
     mem_ok = _memory_instance is not None
-    neo4j_ok = get_hook().enabled
     # 未认证时只返回基础状态
     api_key = request.headers.get("X-API-Key")
     if not api_key or not _get_api_key():
@@ -561,7 +535,6 @@ async def health(request: Request):
     return {
         "status": "ok" if mem_ok else "degraded",
         "mem0": mem_ok,
-        "neo4j": neo4j_ok,
         "degraded_components": degraded,
     }
 
@@ -614,7 +587,7 @@ async def add_memory(req: AddRequest, request: Request):
         infer=req.infer,
     )
 
-    # 写入后：注册 salience + Neo4j + 版本追踪
+    # 写入后：注册 salience + 版本追踪
     memory_id = result.get("memory_id")
     if memory_id and result.get("action") in ("added", "conflict"):
         try:
@@ -627,13 +600,6 @@ async def add_memory(req: AddRequest, request: Request):
             version_tracker.save_version(memory_id, content, reason="create")
         except Exception as e:
             logger.warning("version_tracker init 失败: %s", e)
-
-        try:
-            hook = get_hook()
-            if hook.enabled:
-                hook.write(memory_id, content)
-        except Exception as e:
-            logger.warning("neo4j write 失败: %s", e)
 
         # FTS5 双写
         try:
@@ -658,7 +624,7 @@ async def add_memory(req: AddRequest, request: Request):
 async def search_memory(req: SearchRequest, request: Request):
     """搜索记忆。
 
-    链路：向量检索 → Neo4j引导查询 → 5维打分 → rerank → salience boost
+    链路：向量检索 → 5维打分 → rerank → salience boost
     user_id 优先级：请求头 X-User-ID > 请求体 user_id > 默认 "bo"
     """
     memory = get_memory()
@@ -704,7 +670,7 @@ async def search_memory(req: SearchRequest, request: Request):
         hybrid_result = await loop.run_in_executor(
             None,
             lambda: qc.query_points(
-                collection_name="mem0",
+                collection_name=getattr(memory, "collection_name", "mem0"),
                 query=FusionQuery(fusion=Fusion.RRF),
                 prefetch=[
                     Prefetch(query=dense_vec, using="", limit=search_limit),
@@ -924,14 +890,6 @@ async def delete_memory_confirm(req: DeleteRequest, request: Request):
     except Exception as e:
         logger.warning("salience delete 失败: %s", e)
     
-    # 4. Neo4j 清理
-    try:
-        hook = get_hook()
-        if hook.enabled:
-            hook.cleanup(req.memory_id)
-    except Exception as e:
-        logger.warning("neo4j cleanup 失败: %s", e)
-
     # 5. FTS5 清理
     try:
         from wrapper.fts5_store import get_fts5
@@ -972,7 +930,7 @@ async def delete_memory_cancel(req: DeleteRequest, request: Request):
 
 @app.post("/update", dependencies=[Depends(verify_api_key), Depends(rate_limit)])
 async def update_memory(req: UpdateRequest, request: Request):
-    """更新记忆内容（Qdrant + Neo4j 双端同步）。
+    """更新记忆内容（Qdrant 同步）。
 
     安全链路：注入防御 → PII 脱敏 → 更新
     """
@@ -1031,15 +989,6 @@ async def update_memory(req: UpdateRequest, request: Request):
         # 2. 更新 Qdrant
         await memory.update(req.memory_id, cleaned_content, metadata=update_metadata)
 
-        # 3. 同步更新 Neo4j（先删后写）
-        try:
-            hook = get_hook()
-            if hook.enabled:
-                hook.cleanup(req.memory_id)
-                hook.write(req.memory_id, cleaned_content)
-        except Exception as e:
-            logger.debug("neo4j update 失败: %s", e)
-
         # 4. FTS5 双写
         try:
             from wrapper.fts5_store import get_fts5
@@ -1070,7 +1019,7 @@ async def get_degradation():
 
 @app.get("/stats", dependencies=[Depends(verify_api_key), Depends(rate_limit)])
 async def get_stats():
-    """查询 Qdrant 和 Neo4j 数据量。
+    """查询 Qdrant 数据量。
 
     返回各组件的 points/nodes/rels 数量，用于监控和诊断。
     """
@@ -1078,7 +1027,7 @@ async def get_stats():
     from wrapper.mem0_runtime import load_config as _lc
 
     config = _lc()
-    result: Dict[str, Any] = {"qdrant": {}, "neo4j": {}}
+    result: Dict[str, Any] = {"qdrant": {}}
 
     # ── Qdrant ──
     try:
@@ -1104,19 +1053,6 @@ async def get_stats():
     except Exception as e:
         result["qdrant"]["_error"] = str(e)
 
-    # ── Neo4j ──
-    try:
-        hook = get_hook()
-        if hook.enabled and hook._driver:
-            with hook._driver.session() as session:
-                nodes = session.run("MATCH (n) RETURN count(n) as c").single()["c"]
-                rels = session.run("MATCH ()-[r]->() RETURN count(r) as c").single()["c"]
-            result["neo4j"]["nodes"] = nodes
-            result["neo4j"]["relationships"] = rels
-        else:
-            result["neo4j"]["_error"] = "not connected"
-    except Exception as e:
-        result["neo4j"]["_error"] = str(e)
 
     return result
 
@@ -1126,11 +1062,10 @@ async def expire_memories():
     """手动触发过期清理。
 
     扫描所有记忆，删除已过期的条目（基于 lane TTL 或 expires 标记）。
-    同步清理 Qdrant + Neo4j。
+    同步清理 Qdrant。
     """
-    hook = get_hook()
     start = time.time()
-    deleted = auto_expire.run_expire_cycle(neo4j_hook=hook)
+    deleted = auto_expire.run_expire_cycle()
     elapsed_ms = int((time.time() - start) * 1000)
     return {
         "deleted": deleted,
@@ -1153,9 +1088,8 @@ async def consolidate_memories():
     查找相似度 >= 85% 的记忆对，合并去重。
     """
     memory = get_memory()
-    hook = get_hook()
     start = time.time()
-    merged = await consolidation.run_consolidation_cycle(memory, neo4j_hook=hook)
+    merged = await consolidation.run_consolidation_cycle(memory)
     elapsed_ms = int((time.time() - start) * 1000)
     return {
         "merged": merged,
@@ -1246,9 +1180,8 @@ async def evolve_memories():
     分析记忆质量，清理低质量记忆，优化整体质量。
     """
     memory = get_memory()
-    hook = get_hook()
     start = time.time()
-    result = await evolve_mem.run_evolve_cycle(memory, neo4j_hook=hook)
+    result = await evolve_mem.run_evolve_cycle(memory)
     elapsed_ms = int((time.time() - start) * 1000)
     result["elapsed_ms"] = elapsed_ms
     return result
@@ -1364,15 +1297,6 @@ async def rollback_version(memory_id: str, req: RollbackRequest):
     # 3. 用旧版本内容覆盖
     try:
         await memory.update(memory_id, target["content"])
-
-        # 4. 同步 Neo4j
-        try:
-            hook = get_hook()
-            if hook.enabled:
-                hook.cleanup(memory_id)
-                hook.write(memory_id, target["content"])
-        except Exception as e:
-            logger.debug("rollback: Neo4j 同步失败: %s", e)
 
         return {
             "status": "ok",

@@ -711,7 +711,6 @@ def _merge_metadata(group: list, best_text: str) -> dict:
 
 async def run_consolidation_cycle(
     memory,
-    neo4j_hook=None,
     user_id: str = "bo",
     agent_id: str = "hermes",
 ) -> int:
@@ -815,22 +814,6 @@ async def run_consolidation_cycle(
                     except Exception as e:
                         logger.debug("归档失败 %s: %s", old_id[:8], e)
 
-            # 清理 Neo4j + 写入新记忆
-            for item in memories:
-                old_id = item.get("id", "")
-                if old_id and neo4j_hook and neo4j_hook.enabled:
-                    try:
-                        neo4j_hook.cleanup(old_id)
-                    except Exception:
-                        pass
-
-            # 写入 Neo4j（新合并记忆）
-            if neo4j_hook and neo4j_hook.enabled:
-                try:
-                    neo4j_hook.write(new_id, merged_text)
-                except Exception as e:
-                    logger.debug("Neo4j 合并写入失败 %s: %s", new_id[:8], e)
-
             # 记录合并历史
             _record_merge(new_id, source_ids, merged_text)
 
@@ -863,13 +846,6 @@ def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
     from wrapper.fetch_all import get_distinct_user_ids
     logger.info("consolidation v2 后台线程启动，间隔 %ds", interval)
 
-    from wrapper.neo4j_hook import get_hook
-    neo4j_hook = None
-    try:
-        neo4j_hook = get_hook()
-    except Exception:
-        pass
-
     while _running:
         try:
             if not background_tasks_lock.acquire(timeout=5):
@@ -884,7 +860,7 @@ def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
                     logger.info("consolidation: 处理 %d 个用户", len(user_ids))
                     total_merged = 0
                     for uid in user_ids:
-                        merged = asyncio.run(run_consolidation_cycle(memory, neo4j_hook=neo4j_hook, user_id=uid))
+                        merged = asyncio.run(run_consolidation_cycle(memory, user_id=uid))
                         total_merged += merged
                     if total_merged > 0:
                         logger.info("本轮整合 %d 条记忆（%d 个用户）", total_merged, len(user_ids))

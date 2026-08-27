@@ -95,13 +95,13 @@ def _clear_persisted(task_content: str = None, row_id: int = None):
         if row_id:
             conn.execute("DELETE FROM compensation_queue WHERE id = ?", (row_id,))
         elif task_content:
-            conn.execute("DELETE FROM compensation_queue WHERE content = ? AND created_at = ?", (task_content,))
+            conn.execute("DELETE FROM compensation_queue WHERE content = ?", (task_content,))
         else:
             conn.execute("DELETE FROM compensation_queue")
         conn.commit()
         conn.close()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("补偿队列清除持久化失败: %s", e)
 
 
 def enqueue(content: str, filters: dict, metadata: Optional[dict] = None) -> bool:
@@ -201,3 +201,32 @@ def stats() -> dict:
             "max_size": _queue.maxlen,
             "pending_retries": sum(1 for t in _queue if t["retries"] > 0),
         }
+
+
+def dead_stats(limit: int = 50) -> dict:
+    """查询已放弃的任务（重试耗尽）。从 SQLite 中检索 retries >= MAX_RETRIES 的记录。"""
+    result = {"total": 0, "tasks": []}
+    if not os.path.exists(_DB_PATH):
+        return result
+    try:
+        conn = sqlite3.connect(_DB_PATH, timeout=10)
+        row_count = conn.execute(
+            "SELECT COUNT(*) FROM compensation_queue WHERE retries >= ?", (MAX_RETRIES,)
+        ).fetchone()[0]
+        result["total"] = row_count
+        rows = conn.execute(
+            "SELECT id, content, filters, metadata, retries, next_retry_at, created_at "
+            "FROM compensation_queue WHERE retries >= ? ORDER BY created_at DESC LIMIT ?",
+            (MAX_RETRIES, limit),
+        ).fetchall()
+        conn.close()
+        for row_id, content, filters_json, meta_json, retries, next_retry_at, created_at in rows:
+            result["tasks"].append({
+                "id": row_id,
+                "content_preview": content[:100] if content else "",
+                "retries": retries,
+                "created_at": created_at,
+            })
+    except Exception as e:
+        logger.warning("dead_stats 查询失败: %s", e)
+    return result

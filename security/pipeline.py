@@ -92,8 +92,8 @@ def _enqueue_compensation(content: str, filters: dict, metadata: dict = None):
     try:
         from security.compensation import enqueue
         enqueue(content, filters, metadata)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("compensation enqueue failed: %s", e)
 
 
 async def safe_add(
@@ -206,7 +206,8 @@ async def safe_add(
             from wrapper.fts5_store import get_fts5
             get_fts5().write(mem_id, content, user_id)
         except Exception as e:
-            logger.debug("FTS5 dedup sync 失败: %s", e)
+            logger.warning("FTS5 dedup sync 失败，入补偿队列: %s", e)
+            _enqueue_compensation(content, filters, metadata)
         return {"action": "duplicate", "memory_id": mem_id, "similarity": sim}
 
     # 5. 正常写入

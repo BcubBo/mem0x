@@ -572,8 +572,8 @@ async def add_memory(req: AddRequest, request: Request):
         from wrapper.sparse_vector import get_bm25_encoder
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, get_bm25_encoder().encode, content)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("BM25 IDF 训练失败: %s", e)
 
     # 初始化使用维度字段
     usage_metadata = {
@@ -645,7 +645,7 @@ async def search_memory(req: SearchRequest, request: Request):
     logger.info("🔍 search: user_id=%s, agent_id=%s, req.user_id=%s, req.agent_id=%s", user_id, agent_id, req.user_id, req.agent_id)
     # 打印请求体原文（调试用）
     import json as _json
-    logger.debug("🔍 search: body=%s", _json.dumps({"query": req.query[:50], "user_id": req.user_id, "agent_id": req.agent_id}, ensure_ascii=False))
+    logger.debug("🔍 search: body=%s", _json.dumps({"query": "***", "user_id": req.user_id, "agent_id": req.agent_id}, ensure_ascii=False))
 
     # 构建 filters（mem0 2.0+ 必须有 user_id/agent_id/run_id 之一）
     filters = {"user_id": user_id, "agent_id": agent_id}
@@ -711,7 +711,7 @@ async def search_memory(req: SearchRequest, request: Request):
                 "attributed_to": payload.get("attributed_to", ""),
             })
 
-        logger.info("🔍 search hybrid: query=%s, results=%d", req.query[:30], len(results))
+        logger.info("🔍 search hybrid: results=%d", len(results))
     except Exception as e:
         logger.warning("hybrid search 失败，降级到 FTS5: %s", e)
         results = []
@@ -836,6 +836,21 @@ async def search_memory(req: SearchRequest, request: Request):
     }
 
 
+async def _qdrant_retry(coro_factory, *, retries: int = 3, base_delay: float = 0.5):
+    """Qdrant 写入重试：指数退避，最多 retries 次。coro_factory 每次调用返回新的 coroutine。"""
+    last_exc = None
+    for attempt in range(retries):
+        try:
+            return await coro_factory()
+        except Exception as e:
+            last_exc = e
+            if attempt < retries - 1:
+                delay = base_delay * (2 ** attempt)
+                logger.warning("Qdrant 操作失败(第%d次)，%0.1fs 后重试: %s", attempt + 1, delay, e)
+                await asyncio.sleep(delay)
+    raise last_exc
+
+
 @app.post("/delete", dependencies=[Depends(verify_api_key), Depends(rate_limit)])
 async def delete_memory(req: DeleteRequest, request: Request):
     """软删除记忆。搜索时过滤，数据仍保留可恢复。"""
@@ -889,9 +904,9 @@ async def delete_memory_confirm(req: DeleteRequest, request: Request):
     
     memory = get_memory()
     
-    # 2. mem0 删除（Qdrant）
+    # 2. mem0 删除（Qdrant，带重试）
     try:
-        await memory.delete(req.memory_id)
+        await _qdrant_retry(lambda: memory.delete(req.memory_id))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Delete failed: {e}")
     
@@ -994,8 +1009,8 @@ async def update_memory(req: UpdateRequest, request: Request):
         if req.metadata:
             update_metadata.update(req.metadata)
 
-        # 2. 更新 Qdrant
-        await memory.update(req.memory_id, cleaned_content, metadata=update_metadata)
+        # 2. 更新 Qdrant（带重试）
+        await _qdrant_retry(lambda: memory.update(req.memory_id, cleaned_content, metadata=update_metadata))
 
         # 4. FTS5 双写
         try:
@@ -1023,6 +1038,13 @@ async def get_degradation():
         "degraded": DegradationTracker.get_degraded_components(),
         "details": DegradationTracker.get_degraded_details(),
     }
+
+
+@app.get("/compensation/dead", dependencies=[Depends(verify_api_key), Depends(rate_limit)])
+async def get_compensation_dead(limit: int = 50):
+    """查询补偿队列中已放弃的任务（重试耗尽）。"""
+    from security.compensation import dead_stats
+    return dead_stats(limit)
 
 
 @app.get("/stats", dependencies=[Depends(verify_api_key), Depends(rate_limit)])
@@ -1055,7 +1077,8 @@ async def get_stats():
                 pts = r.json().get("result", {}).get("points_count", 0)
                 result["qdrant"][name] = pts
                 total_points += pts
-            except Exception:
+            except Exception as e:
+                logger.debug("Qdrant collection %s 查询失败: %s", name, e)
                 result["qdrant"][name] = "error"
         result["qdrant"]["_total"] = total_points
     except Exception as e:
@@ -1130,7 +1153,8 @@ async def add_core_memory(req: CoreMemoryRequest):
         results = await memory.search(query="", filters={"memory_id": req.memory_id}, top_k=1)
         items = results.get("results", []) if isinstance(results, dict) else []
         content = items[0].get("memory", "") if items else ""
-    except Exception:
+    except Exception as e:
+        logger.debug("core-memory/add 查询失败: %s", e)
         content = ""
 
     loop = asyncio.get_running_loop()
@@ -1313,7 +1337,7 @@ async def rollback_version(memory_id: str, req: RollbackRequest):
             current_meta = current.get("metadata") or {}
             await loop.run_in_executor(None, version_tracker.save_version, memory_id, current_content, current_meta, "pre-rollback")
     except Exception as e:
-        logger.debug("rollback: 保存当前版本失败: %s", e)
+        logger.warning("rollback: 保存当前版本失败: %s", e)
 
     # 3. 用旧版本内容覆盖
     try:

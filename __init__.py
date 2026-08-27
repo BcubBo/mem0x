@@ -220,25 +220,13 @@ class Mem0RemoteProvider(MemoryProvider):
         if not results:
             return ""
 
-        # 分离向量结果和 Neo4j 联想结果
-        vector_results = [r for r in results if not r.get("id", "").startswith("neo4j:")]
-        neo4j_results = [r for r in results if r.get("id", "").startswith("neo4j:")]
-
         lines = []
-        # 向量结果（取 top5）
-        for r in vector_results[:5]:
+        # 取 top5 结果
+        for r in results[:5]:
             mem = r.get("memory", "")
             score = r.get("score", 0)
             if mem:
                 lines.append(f"- {mem} (score: {score:.2f})")
-
-        # Neo4j 联想结果（取 top3，作为补充上下文）
-        if neo4j_results:
-            lines.append("\n[关联实体]")
-            for r in neo4j_results[:3]:
-                mem = r.get("memory", "")
-                if mem:
-                    lines.append(f"- {mem}")
 
         return "\n".join(lines)
 
@@ -422,33 +410,14 @@ def register(ctx) -> None:
 
     ctx 是 _ProviderCollector 实例，调用 ctx.register_memory_provider() 注册。
     激活方式：config.yaml 中设置 memory.provider: mem0x
+
+    register_memory_provider 会读取 provider.get_tool_schemas() 返回的所有工具
+    并通过 inject_memory_provider_tools 注入到 agent，包括 search/add/update/delete。
     """
     global _provider
     _provider = Mem0RemoteProvider()
     ctx.register_memory_provider(_provider)
-
-    # 注册 update/delete 为 agent 可调用工具
-    # register_memory_provider 只暴露 search/add，update/delete 需要单独注册
-    def _handle_delete(args):
-        return _provider.handle_tool_call("mem0_delete", args)
-    def _handle_update(args):
-        return _provider.handle_tool_call("mem0_update", args)
-
-    ctx.register_tool(
-        name="mem0_delete",
-        toolset="memory",
-        schema=DELETE_SCHEMA,
-        handler=_handle_delete,
-        description="删除长期记忆。",
-    )
-    ctx.register_tool(
-        name="mem0_update",
-        toolset="memory",
-        schema=UPDATE_SCHEMA,
-        handler=_handle_update,
-        description="更新长期记忆内容。",
-    )
-    logger.info("mem0x plugin registered (search/add via memory_provider, update/delete via register_tool)")
+    logger.info("mem0x plugin registered via ctx.register_memory_provider()")
 
 
 def get_provider() -> Mem0RemoteProvider:

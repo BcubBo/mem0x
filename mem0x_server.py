@@ -642,16 +642,12 @@ async def add_memory(req: AddRequest, request: Request):
         except Exception as e:
             logger.warning("FTS5 write 失败: %s", e)
 
-        # spaCy NER → tags 写入 Qdrant payload
+        # tags hook：提取实体写入 Qdrant payload
         try:
-            from wrapper.spacy_ner import extract_tags
-            tags = extract_tags(content)
-            if tags:
-                qc = memory.vector_store.client
-                qc.set_payload("mem0", payload={"tags": tags}, points=[memory_id])
-                logger.debug("spaCy NER: id=%s tags=%s", memory_id[:12], tags)
+            from wrapper.tags_hook import on_add
+            on_add(memory, memory_id, content)
         except Exception as e:
-            logger.debug("spaCy NER 失败: %s", e)
+            logger.debug("tags_hook on_add 失败: %s", e)
 
     elapsed_ms = int((time.time() - start) * 1000)
     result["elapsed_ms"] = elapsed_ms
@@ -887,7 +883,14 @@ async def delete_memory(req: DeleteRequest, request: Request):
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Delete failed: {e}")
-    
+
+    # 3. tags hook：清空 tags
+    try:
+        from wrapper.tags_hook import on_delete
+        on_delete(memory, req.memory_id)
+    except Exception as e:
+        logger.debug("tags_hook on_delete 失败: %s", e)
+
     return {"status": "ok", "memory_id": req.memory_id, "action": "soft_deleted", "confirm_token": _generate_delete_token(req.memory_id, user_id=req.user_id if hasattr(req, "user_id") else None, api_key=request.headers.get("X-API-Key")), "confirm_expires_in": _DELETE_CONFIRM_TTL}
 
 
@@ -1045,6 +1048,12 @@ async def update_memory(req: UpdateRequest, request: Request):
         except Exception as e:
             logger.debug("FTS5 update 失败: %s", e)
 
+        # 5. tags hook：更新 tags
+        try:
+            from wrapper.tags_hook import on_update
+            on_update(memory, req.memory_id, cleaned_content)
+        except Exception as e:
+            logger.debug("tags_hook on_update 失败: %s", e)
         return {"status": "ok", "memory_id": req.memory_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"mem0 update failed: {e}")

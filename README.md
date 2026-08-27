@@ -105,21 +105,41 @@ sudo docker compose -f docker-compose.mem0x.yml up -d
       "provider": "openai",
       "config": {
         "model": "mimo-v2.5-pro",
+        "openai_base_url": "https://token-plan-cn.xiaomimimo.com/v1",
         "max_tokens": 5000
+      }
+    },
+    "embedder": {
+      "provider": "openai",
+      "config": {
+        "model": "BAAI/bge-m3",
+        "api_key": "not-needed",
+        "openai_base_url": "http://mem0x-embedding-nginx:8775/v1"
       }
     },
     "vector_store": {
       "provider": "qdrant",
       "config": {
         "url": "http://qdrant:6333",
-        "collection_name": "mem0"
+        "collection_name": "mem0",
+        "embedding_model_dims": 1024
       }
     }
+  },
+  "scoring": {
+    "weights": {
+      "vector": 0.38,
+      "time": 0.15,
+      "reliability": 0.1,
+      "heat": 0.17,
+      "confidence": 0.2
+    },
+    "rerank_weight": 0.4,
+    "salience_weight": 0.15
   },
   "conflict": {
     "llm": {
       "config": {
-        "num_votes": 1,
         "max_llm_calls": 1
       }
     }

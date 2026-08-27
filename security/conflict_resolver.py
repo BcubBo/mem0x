@@ -584,6 +584,12 @@ async def _detect_and_resolve_inner(memory, new_text: str, filters: dict, auto_a
 
         try:
             await memory.update(mid, old_text, metadata=updated_meta)
+            # tags hook：冲突更新后重新提取 tags
+            try:
+                from wrapper.tags_hook import on_update
+                on_update(memory, mid, old_text)
+            except Exception:
+                pass
             _log_conflict(mid, old_text, new_text, reason, "rule_match" if rule_matched else "llm_judge")
             conflicts.append({
                 "memory_id": mid,
@@ -671,6 +677,12 @@ async def rollback_conflict(memory_id: str, memory=None) -> dict:
         old_meta.pop("archived_by", None)
         old_meta.pop("superseded_by", None)
         await memory.update(memory_id, old_text, metadata=old_meta)
+        # tags hook：回滚后重新提取 tags
+        try:
+            from wrapper.tags_hook import on_update
+            on_update(memory, memory_id, old_text)
+        except Exception:
+            pass
 
         logger.info("↩️ conflict 回滚: %s", memory_id[:8])
         return {"status": "ok", "memory_id": memory_id}

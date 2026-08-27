@@ -787,6 +787,13 @@ async def run_consolidation_cycle(
                 if not new_id:
                     logger.warning("合并写入未返回 ID")
                     continue
+
+                # tags hook：合并后的新记忆提取 tags
+                try:
+                    from wrapper.tags_hook import on_add
+                    on_add(memory, new_id, merged_text)
+                except Exception as e:
+                    logger.debug("consolidation tags_hook 失败: %s", e)
             except Exception as e:
                 logger.warning("合并写入失败: %s", e)
                 continue

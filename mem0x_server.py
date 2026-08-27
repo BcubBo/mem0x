@@ -754,7 +754,6 @@ async def search_memory(req: SearchRequest, request: Request):
         for r in results:
             fts = snippet_map.get(r["id"])
             if fts:
-                r["bm25_score"] = abs(fts["score"])
                 if fts.get("snippet"):
                     r["snippet"] = fts["snippet"]
     except Exception as e:

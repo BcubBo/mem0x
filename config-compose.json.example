@@ -49,11 +49,12 @@
   },
   "scoring": {
     "weights": {
-      "vector": 0.35,
-      "bm25": 0.25,
+      "vector": 0.38,
+      "bm25": 0.00,
       "time": 0.15,
       "reliability": 0.1,
-      "heat": 0.15
+      "heat": 0.17,
+      "confidence": 0.20
     },
     "recency_lambda": 0.05,
     "rerank_weight": 0.4,

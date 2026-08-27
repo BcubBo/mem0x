@@ -27,12 +27,12 @@ IGNITION_THRESHOLD = 0.85
 IGNITION_MAX = 8
 
 DEFAULT_WEIGHTS = {
-    "vector": 0.30,
-    "bm25": 0.20,
-    "time": 0.12,
+    "vector": 0.38,
+    "bm25": 0.00,
+    "time": 0.15,
     "reliability": 0.10,
-    "heat": 0.13,
-    "confidence": 0.15,
+    "heat": 0.17,
+    "confidence": 0.20,
 }
 
 

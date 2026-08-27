@@ -211,6 +211,22 @@ async def run_evolve_cycle(memory, neo4j_hook=None, user_id: str = "bo",
                         Q = _get_quality_score(metadata, created_at, access_count)
 
                         if Q < prune_threshold and not is_core_memory(mem_id):
+                            # 跳过已归档/已删除的记忆
+                            meta_check = item.get("metadata") or {}
+                            if meta_check.get("archived") or meta_check.get("deleted_at"):
+                                continue
+                            # 跳过太新的记忆（7天内不删）
+                            try:
+                                from datetime import datetime, timezone, timedelta
+                                ca = item.get("created_at")
+                                if ca:
+                                    created = datetime.fromisoformat(str(ca).replace("Z", "+00:00"))
+                                    if created.tzinfo is None:
+                                        created = created.replace(tzinfo=timezone.utc)
+                                    if datetime.now(timezone.utc) - created < timedelta(days=7):
+                                        continue
+                            except Exception:
+                                pass
                             try:
                                 await memory.delete(mem_id)
                                 sync_after_delete(mem_id, user_id)

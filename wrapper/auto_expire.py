@@ -141,6 +141,11 @@ def run_expire_cycle(neo4j_hook=None, user_id: str = "bo") -> int:
                 except ImportError:
                     pass
 
+                # 跳过已归档/已删除的记忆（其他系统已处理）
+                payload = point.payload or {}
+                if payload.get("archived") or payload.get("deleted_at"):
+                    continue
+
                 try:
                     client.delete(
                         collection_name=collection,

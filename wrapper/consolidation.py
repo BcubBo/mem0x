@@ -788,6 +788,14 @@ async def run_consolidation_cycle(
                     logger.warning("合并写入未返回 ID")
                     continue
 
+                # P0 修复：检查 dedup 是否匹配了 source 本身
+                source_ids = [item.get("id", "") for item in memories]
+                if new_id in source_ids:
+                    logger.warning(
+                        "consolidation dedup 匹配了 source %s，合并内容丢失，跳过归档",
+                        new_id[:8])
+                    continue
+
                 # tags hook：合并后的新记忆提取 tags
                 try:
                     from wrapper.tags_hook import on_add

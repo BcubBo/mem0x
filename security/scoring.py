@@ -160,10 +160,10 @@ def score_and_rank(
         except (ValueError, TypeError):
             reliability_s = 0.5
 
-        # 热度分（access_count / 100，上限 1.0）
+        # 热度分：由 salience boost 统一注入，此处不算（避免双重计算）
         raw_count = (item.get("metadata") or {}).get("access_count", 1)
         access_count = float(raw_count if raw_count is not None else 1)
-        heat_s = min(access_count / 100.0, 1.0)
+        heat_s = 0.0
 
         # 置信度衰减分
         confidence_s = _compute_confidence(created_ts, access_count, now_ts)

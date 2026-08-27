@@ -25,16 +25,12 @@ import sqlite3
 import asyncio
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional, Dict, Any
 
 logger = logging.getLogger("mem0x.conflict_resolver")
 
-# ── LLM 投票共享线程池 ──
-_llm_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="llm-judge")
-
-# ── 实体级互斥锁（防止同一实体并发矛盾消解导致双写竞态） ──
+# ── LLM 配置 ──
 _entity_locks: dict[str, asyncio.Lock] = {}
 _entity_locks_MAX = 10000
 
@@ -278,65 +274,6 @@ def _llm_judge_contradiction(
     return None
 
 
-def _llm_judge_parallel(
-    new_text: str,
-    old_text: str,
-    new_meta: dict = None,
-    old_meta: dict = None,
-    old_created_at: str = None,
-    num_votes: int = 2,
-) -> Optional[Dict[str, Any]]:
-    """并行投票：同时发起 num_votes 次 LLM 调用，多数票决定结果。"""
-    def _single_vote():
-        return _llm_judge_contradiction(
-            new_text, old_text,
-            new_meta=new_meta, old_meta=old_meta,
-            old_created_at=old_created_at,
-        )
-
-    results = [None] * num_votes
-    futures = {_llm_executor.submit(_single_vote): i for i in range(num_votes)}
-    for future in as_completed(futures):
-        idx = futures[future]
-        try:
-            results[idx] = future.result()
-        except Exception as e:
-            logger.warning("LLM 投票 %d/%d 失败: %s", idx + 1, num_votes, e)
-
-    valid = [r for r in results if r is not None]
-    if not valid:
-        logger.warning("所有 LLM 投票均失败")
-        return None
-
-    true_votes = sum(1 for r in valid if r.get("contradicts"))
-    false_votes = len(valid) - true_votes
-    majority_contradicts = true_votes > false_votes
-
-    majority_results = [r for r in valid if r.get("contradicts") == majority_contradicts]
-    avg_confidence = sum(r.get("confidence", 0.5) for r in majority_results) / len(majority_results)
-    best_reason = max((r.get("reason", "") for r in majority_results), key=len)
-
-    action_votes = {}
-    for r in majority_results:
-        a = r.get("action", "keep_both")
-        action_votes[a] = action_votes.get(a, 0) + 1
-    majority_action = max(action_votes, key=action_votes.get)
-
-    logger.info(
-        "🗳️ parallel vote: %d/%d 矛盾票, avg_conf=%.2f, action=%s",
-        true_votes, len(valid), avg_confidence, majority_action,
-    )
-
-    return {
-        "contradicts": majority_contradicts,
-        "confidence": round(avg_confidence, 2),
-        "reason": best_reason,
-        "action": majority_action,
-        "votes": true_votes if majority_contradicts else false_votes,
-        "total": len(valid),
-    }
-
-
 def _extract_entity(text: str) -> str:
     """从变更语句中提取变更主体。
     
@@ -498,7 +435,6 @@ async def _detect_and_resolve_inner(memory, new_text: str, filters: dict, auto_a
     conflicts = []
     llm_call_count = 0
     MAX_LLM_CALLS = _get_llm_config().get("max_llm_calls", 1)
-    NUM_VOTES = _get_llm_config().get("num_votes", 1)  # 从配置读取
 
     for r in results:
         if not isinstance(r, dict):

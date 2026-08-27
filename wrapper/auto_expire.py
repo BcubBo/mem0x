@@ -149,15 +149,18 @@ def run_expire_cycle(user_id: str = "bo") -> int:
                     continue
 
                 try:
-                    client.delete(
+                    # 软删除：设置 deleted_at 标记而非硬删 Qdrant 点
+                    from datetime import datetime, timezone
+                    client.set_payload(
                         collection_name=collection,
-                        points_selector=[point.id],
+                        payload={"deleted_at": datetime.now(timezone.utc).isoformat()},
+                        points=[point.id],
                     )
                     deleted += 1
                     sync_after_delete(str(point.id), user_id)
-                    logger.info("已删除过期记忆: %s | %.40s", point.id, data)
+                    logger.info("已标记过期记忆软删除: %s | %.40s", point.id, data)
                 except Exception as e:
-                    logger.warning("删除失败 %s: %s", point.id, e)
+                    logger.warning("标记软删除失败 %s: %s", point.id, e)
 
 
             if next_offset is None:

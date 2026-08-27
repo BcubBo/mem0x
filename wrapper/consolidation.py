@@ -758,7 +758,7 @@ async def run_consolidation_cycle(
             elif avg_cosine >= 0.88:
                 # Near Dup：根据 Jaccard 决定用 LLM 合并还是关键词拼接
                 # 提取所有记忆的关键词集合，算平均 Jaccard
-                all_kw = [set(re.findall(r'[\u4e00-\u9fff]{2,}|[A-Za-z]+|\d+', m.get("memory", ""))) for m in memories]
+                all_kw = [_extract_keywords(m.get("memory", "")) for m in memories]
                 if len(all_kw) >= 2:
                     pairwise = [_jaccard(all_kw[i], all_kw[j])
                                  for i in range(len(all_kw)) for j in range(i+1, len(all_kw))]
@@ -807,13 +807,18 @@ async def run_consolidation_cycle(
                     logger.warning("合并写入未返回 ID")
                     continue
 
-                # P0 修复：检查 dedup 是否匹配了 source 本身
+                # 检查 dedup 是否匹配了 source 本身
                 source_ids = [item.get("id", "") for item in memories]
                 if new_id in source_ids:
-                    logger.warning(
-                        "consolidation dedup 匹配了 source %s，合并内容丢失，跳过归档",
-                        new_id[:8])
-                    continue
+                    # dedup 匹配到 source，用 update 覆盖为合并结果
+                    try:
+                        await memory.update(new_id, merged_text, metadata=merged_meta)
+                        logger.info("consolidation dedup 匹配 source %s，已用合并结果覆盖", new_id[:8])
+                    except Exception as e:
+                        logger.warning("consolidation 覆盖 source %s 失败: %s", new_id[:8], e)
+                        continue
+                    # 不再归档被匹配的 source，只归档其余
+                    source_ids = [sid for sid in source_ids if sid != new_id]
 
                 # tags hook：合并后的新记忆提取 tags
                 try:

@@ -9,6 +9,7 @@ import math
 import os
 import re
 import sqlite3
+import threading
 from collections import Counter
 from typing import Any
 
@@ -127,7 +128,7 @@ class BM25Encoder:
             conn.commit()
             conn.close()
         except Exception as e:
-            logger.debug("BM25 IDF 持久化失败: %s", e)
+            logger.warning("BM25 IDF 持久化失败: %s", e)
 
     def load_idf(self) -> bool:
         """从 SQLite 加载 IDF 统计。返回是否成功。"""
@@ -145,17 +146,20 @@ class BM25Encoder:
             logger.info("BM25 IDF 加载成功: %d 文档, %d 词", self.doc_count, len(self.doc_freq))
             return True
         except Exception as e:
-            logger.debug("BM25 IDF 加载失败: %s", e)
+            logger.warning("BM25 IDF 加载失败: %s", e)
             return False
 
 
 # 全局单例
 _bm25_encoder: BM25Encoder | None = None
+_bm25_encoder_lock = threading.Lock()
 
 
 def get_bm25_encoder() -> BM25Encoder:
     global _bm25_encoder
     if _bm25_encoder is None:
-        _bm25_encoder = BM25Encoder()
-        _bm25_encoder.load_idf()  # 启动时自动加载
+        with _bm25_encoder_lock:
+            if _bm25_encoder is None:
+                _bm25_encoder = BM25Encoder()
+                _bm25_encoder.load_idf()  # 启动时自动加载
     return _bm25_encoder

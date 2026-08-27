@@ -129,7 +129,7 @@ async def lifespan(app: FastAPI):
         from security.pipeline import load_redact_names as _load_pipeline_redact
         _load_pipeline_redact(config)
     except Exception as e:
-        logger.debug("pipeline redact_names 加载失败: %s", e)
+        logger.warning("pipeline redact_names 加载失败: %s", e)
 
     # 初始化 mem0 单例
     try:
@@ -767,14 +767,14 @@ async def search_memory(req: SearchRequest, request: Request):
         config = load_config()
         results = score_and_rank(req.query, results, limit=req.limit, config=config)
     except Exception as e:
-        logger.debug("scoring 失败: %s", e)
+        logger.warning("scoring 失败: %s", e)
 
     # salience boost（排序前：让高频记忆排更前）
     try:
         loop = asyncio.get_running_loop()
         results = await loop.run_in_executor(None, boost_salience_for_results, results)
     except Exception as e:
-        logger.debug("salience boost 失败: %s", e)
+        logger.warning("salience boost 失败: %s", e)
 
     # rerank
     if req.rerank and results:
@@ -907,14 +907,14 @@ async def delete_memory_confirm(req: DeleteRequest, request: Request):
         from wrapper.fts5_store import get_fts5
         await loop.run_in_executor(None, get_fts5().delete, req.memory_id)
     except Exception as e:
-        logger.debug("FTS5 delete 失败: %s", e)
+        logger.warning("FTS5 delete 失败: %s", e)
 
     # 6. version_tracker 清理
     try:
         from wrapper import version_tracker
         await loop.run_in_executor(None, version_tracker.cleanup, req.memory_id)
     except Exception as e:
-        logger.debug("version_tracker cleanup 失败: %s", e)
+        logger.warning("version_tracker cleanup 失败: %s", e)
 
     return {"status": "ok", "memory_id": req.memory_id, "action": "hard_deleted"}
 
@@ -965,28 +965,22 @@ async def update_memory(req: UpdateRequest, request: Request):
 
     loop = asyncio.get_running_loop()
     try:
-        # 0. 版本追踪：更新前保存旧版本
+        # 0. 单次 GET：版本追踪 + update_count（避免重复请求）
+        existing_meta = {}
+        old_content = ""
         try:
             old_item = await memory.get(req.memory_id)
             if old_item:
                 old_content = old_item.get("memory", "")
-                old_meta = old_item.get("metadata") or {}
+                existing_meta = old_item.get("metadata") or {}
                 await loop.run_in_executor(
                     None, version_tracker.save_version,
-                    req.memory_id, old_content, old_meta, "update",
+                    req.memory_id, old_content, existing_meta, "update",
                 )
         except Exception as e:
             logger.debug("version_tracker save 失败: %s", e)
 
         # 1. 增量更新 update_count
-        existing_meta = {}
-        try:
-            existing_item = await memory.get(req.memory_id)
-            if existing_item:
-                existing_meta = existing_item.get("metadata") or {}
-        except Exception:
-            pass
-        
         current_update_count = existing_meta.get("update_count", 0)
         if isinstance(current_update_count, (int, float)):
             new_update_count = int(current_update_count) + 1
@@ -1009,7 +1003,7 @@ async def update_memory(req: UpdateRequest, request: Request):
             _uid = request.headers.get("X-User-ID", "default")
             await loop.run_in_executor(None, get_fts5().write, req.memory_id, cleaned_content, _uid)
         except Exception as e:
-            logger.debug("FTS5 update 失败: %s", e)
+            logger.warning("FTS5 update 失败: %s", e)
 
         # 5. tags hook：更新 tags（Qdrant set_payload，同步调用需放线程池）
         try:
@@ -1222,7 +1216,7 @@ async def evolve_status():
 async def memory_quality():
     """分析当前记忆质量。"""
     memory = get_memory()
-    return await evolve_mem.analyze_memory_quality(memory)
+    return await evolve_mem.process_memory_quality(memory)
 
 
 # ── Reflect 端点 ──

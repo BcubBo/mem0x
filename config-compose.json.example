@@ -102,6 +102,12 @@
     "auto_archive_threshold": 0.8,
     "notify_threshold": 0.5
   },
+  "neo4j": {
+    "enabled": false,
+    "uri": "bolt://localhost:26787",
+    "username": "neo4j",
+    "password": "YOUR_NEO4J_PASSWORD"
+  },
   "redis": {
     "host": "redis",
     "port": 6379,
@@ -122,5 +128,7 @@
     "extract_tags": true,
     "search_limit": 20,
     "hot_words_min_length": 2
-  }
+  },
+  "redact_names": {},
+  "known_persons": ["bo"]
 }

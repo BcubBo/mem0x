@@ -39,7 +39,7 @@ _running = False
 _thread: Optional[threading.Thread] = None
 
 
-async def analyze_memory_quality(memory, user_id: str = "bo", agent_id: str = "hermes") -> Dict:
+async def process_memory_quality(memory, user_id: str = "bo", agent_id: str = "hermes") -> Dict:
     """分析记忆质量，返回统计信息。
 
     基于 FSRS（Free Spaced Repetition Scheduler）理论 + 文本特征：
@@ -175,7 +175,7 @@ async def run_evolve_cycle(memory, user_id: str = "bo",
 
     try:
         # 1. 分析质量
-        stats = await analyze_memory_quality(memory, user_id, agent_id)
+        stats = await process_memory_quality(memory, user_id, agent_id)
         result["analyzed"] = stats["total"]
         logger.info("记忆质量分析: 总%d, 高质%d, 中质%d, 低质%d, 过期%d",
                     stats["total"], stats["high_quality"],

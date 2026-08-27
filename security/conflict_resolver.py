@@ -93,7 +93,6 @@ def _get_llm_config() -> dict:
                 "api_key": llm_cfg.get("api_key", ""),
                 "max_tokens": llm_cfg.get("max_tokens", 5000),
                 "max_llm_calls": llm_cfg.get("max_llm_calls", 1),
-                "num_votes": llm_cfg.get("num_votes", 2),
             }
             if _llm_config_cache["api_key"] and _llm_config_cache["model"] and _llm_config_cache["base_url"]:
                 _llm_config_cached_at = time.time()

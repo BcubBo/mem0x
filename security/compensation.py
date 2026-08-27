@@ -49,14 +49,15 @@ def _init_db():
 
 
 def _persist_task(task: dict):
-    """持久化单个任务到 SQLite。"""
+    """持久化单个任务到 SQLite，记录行 ID 用于精确删除。"""
     try:
         conn = sqlite3.connect(_DB_PATH, timeout=10)
-        conn.execute(
+        cursor = conn.execute(
             "INSERT INTO compensation_queue (content, filters, metadata, retries, next_retry_at, created_at) VALUES (?,?,?,?,?,?)",
             (task["content"], json.dumps(task["filters"]), json.dumps(task.get("metadata")),
              task["retries"], task["next_retry_at"], task.get("created_at", time.time())),
         )
+        task["row_id"] = cursor.lastrowid
         conn.commit()
         conn.close()
     except Exception as e:
@@ -87,12 +88,14 @@ def _load_persisted():
         logger.warning("补偿队列加载失败: %s", e)
 
 
-def _clear_persisted(task_content: str = None):
-    """清除 SQLite 中的已完成任务。指定内容时只删该条，否则清全部。"""
+def _clear_persisted(task_content: str = None, row_id: int = None):
+    """清除 SQLite 中的已完成任务。优先用 row_id 精确删除，否则清全部。"""
     try:
         conn = sqlite3.connect(_DB_PATH, timeout=10)
-        if task_content:
-            conn.execute("DELETE FROM compensation_queue WHERE content = ?", (task_content,))
+        if row_id:
+            conn.execute("DELETE FROM compensation_queue WHERE id = ?", (row_id,))
+        elif task_content:
+            conn.execute("DELETE FROM compensation_queue WHERE content = ? AND created_at = ?", (task_content,))
         else:
             conn.execute("DELETE FROM compensation_queue")
         conn.commit()
@@ -135,7 +138,7 @@ async def _worker(write_fn: Callable):
                 if not result or result.get("action") == "error":
                     _requeue(task)  # 失败则放回
                 else:
-                    _clear_persisted(task.get("content"))  # 成功则只清该条
+                    _clear_persisted(task.get("content"), task.get("row_id"))  # 成功则只清该条
                     logger.info("补偿队列: 重试成功, 剩余=%d", len(_queue))
             except Exception as e:
                 _requeue(task)

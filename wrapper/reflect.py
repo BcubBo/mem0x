@@ -28,6 +28,7 @@ _running = False
 _thread: Optional[threading.Thread] = None
 _db_path: Optional[str] = None
 _lock = threading.Lock()
+_health_lock = threading.Lock()
 
 
 def _get_db_path() -> str:
@@ -65,6 +66,17 @@ def _ensure_db():
 
 async def analyze_system_health(memory, user_id: str = "bo", agent_id: str = "hermes") -> Dict:
     """分析系统健康状态。"""
+    if not _health_lock.acquire(blocking=False):
+        return {"total_memories": 0, "quality_score": 0.0, "issues": ["分析正在进行中"], "suggestions": []}
+
+    try:
+        return await _analyze_system_health_inner(memory, user_id, agent_id)
+    finally:
+        _health_lock.release()
+
+
+async def _analyze_system_health_inner(memory, user_id: str, agent_id: str) -> Dict:
+    """分析系统健康状态（内部实现，调用方负责加锁）。"""
     health = {
         "total_memories": 0,
         "quality_score": 0.0,
@@ -77,10 +89,32 @@ async def analyze_system_health(memory, user_id: str = "bo", agent_id: str = "he
         if agent_id:
             filters["agent_id"] = agent_id
 
-        # 使用占位符查询获取记忆
+        # 使用 Qdrant count API 获取精确总数
+        try:
+            from wrapper.mem0_runtime import get_memory
+            mem = get_memory()
+            if mem:
+                from qdrant_client.models import Filter as QFilter, FieldCondition, MatchValue
+                qc = mem.vector_store.client
+                collection = getattr(mem, "collection_name", "mem0")
+                count_result = qc.count(
+                    collection_name=collection,
+                    count_filter=QFilter(must=[
+                        FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                    ]),
+                    exact=True,
+                )
+                health["total_memories"] = count_result.count
+        except Exception as e:
+            logger.debug("Qdrant count 失败，降级到 search: %s", e)
+            # 降级：用 search 估算
+            results = await memory.search(query="记忆", filters=filters, top_k=500)
+            items = results.get("results", []) if isinstance(results, dict) else []
+            health["total_memories"] = len(items)
+
+        # 使用占位符查询获取记忆用于质量分析
         results = await memory.search(query="记忆", filters=filters, top_k=500)
         items = results.get("results", []) if isinstance(results, dict) else []
-        health["total_memories"] = len(items)
 
         if not items:
             health["issues"].append("记忆库为空")

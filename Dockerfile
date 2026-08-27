@@ -10,13 +10,12 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir "numpy>=1.26,<2.0"
 
-# spaCy 英文模型（tar 解压）
-COPY en_core_web_sm-3.8.0.tar.gz /tmp/
-RUN tar xzf /tmp/en_core_web_sm-3.8.0.tar.gz -C /usr/local/lib/python3.12/site-packages/ && rm -rf /tmp/*.tar.gz
+# spaCy 英文模型：仓库自带 whl，离线安装
+COPY en_core_web_sm-3.8.0-py3-none-any.whl /tmp/
+RUN pip install --no-cache-dir /tmp/en_core_web_sm-3.8.0-py3-none-any.whl && rm -rf /tmp/*.whl
 
-# spaCy 中文模型（pip install tar.gz，自动处理路径）
-COPY zh_core_web_sm-3.8.0.tar.gz /tmp/
-RUN pip install --no-cache-dir /tmp/zh_core_web_sm-3.8.0.tar.gz && rm -rf /tmp/*.tar.gz
+# spaCy 中文模型：仓库无此文件，联网下载；失败不阻断构建（spacy_ner.py 会降级到 en / None）
+RUN python -m spacy download zh_core_web_sm || true
 
 COPY wrapper/ ./wrapper/
 COPY security/ ./security/

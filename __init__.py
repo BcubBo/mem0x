@@ -13,9 +13,12 @@ import logging
 import os
 import threading
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("hermes_plugins.mem0x")
+
+_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="mem0x")
 
 
 # ═══════════════════════════════════════════════════
@@ -226,7 +229,7 @@ class Mem0RemoteProvider(MemoryProvider):
             mem = r.get("memory", "")
             score = r.get("score", 0)
             if mem:
-                lines.append(f"- {mem} (score: {score:.2f})")
+                lines.append(f"- [MEMORY-DATA] {mem} [/MEMORY-DATA] (score: {score:.2f})")
 
         return "\n".join(lines)
 
@@ -243,7 +246,7 @@ class Mem0RemoteProvider(MemoryProvider):
                 params["metadata"] = metadata
             client.call("add", params)
 
-        threading.Thread(target=_write, daemon=True).start()
+        _pool.submit(_write)
 
     def on_pre_compress(self, messages: list, **kwargs) -> Optional[str]:
         """压缩前抢救。"""
@@ -261,7 +264,7 @@ class Mem0RemoteProvider(MemoryProvider):
             )
             client.call("add", {"messages": content, "infer": True})
 
-        threading.Thread(target=_write, daemon=True).start()
+        _pool.submit(_write)
         return None
 
     def on_memory_write(self, action: str, target: str, content: str, metadata: dict = None, **kwargs) -> None:
@@ -277,7 +280,7 @@ class Mem0RemoteProvider(MemoryProvider):
                 "metadata": {"source": "MEMORY.md", "action": action},
             })
 
-        threading.Thread(target=_write, daemon=True).start()
+        _pool.submit(_write)
 
     def get_tool_schemas(self) -> List[dict]:
         """返回工具 schema。"""
@@ -285,23 +288,14 @@ class Mem0RemoteProvider(MemoryProvider):
 
     def handle_tool_call(self, tool_name: str, args: dict) -> str:
         """处理工具调用。返回 JSON 字符串。"""
+        from ._pii import redact_pii
         client = _get_client()
-        
+
         # PII 脱敏（插件层本地处理）
         if tool_name in ("mem0_add", "mem0_update"):
             content = args.get("content", "")
             if content:
-                import re
-                # 身份证、手机、邮箱、密码明文 → 脱敏替换
-                pii_replacements = [
-                    (r'(?<!\d)[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx](?!\d)', '[REDACTED_ID]'),
-                    (r'(?<!\d)1[3-9]\d{9}(?!\d)', '[REDACTED_PHONE]'),
-                    (r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', '[REDACTED_EMAIL]'),
-                    (r'(password|passwd|secret|token|api[_-]?key)\s*[:=]\s*\S+', r'\1=[REDACTED]'),
-                ]
-                for pattern, replacement in pii_replacements:
-                    content = re.sub(pattern, replacement, content, flags=re.IGNORECASE)
-                args["content"] = content
+                args["content"] = redact_pii(content)
         
         if tool_name == "mem0_add":
             content = args.get("content", "")

@@ -1,0 +1,5 @@
+config-compose.json
+config-*.json
+!config-compose.json.example
+*.env
+.env.*

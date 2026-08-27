@@ -586,24 +586,26 @@ async def add_memory(req: AddRequest, request: Request):
         infer=req.infer,
     )
 
-    # 写入后：注册 salience + 版本追踪
+    # 写入后：注册 salience + 版本追踪（异步化 SQLite I/O）
     memory_id = result.get("memory_id")
     if memory_id and result.get("action") in ("added", "conflict"):
+        loop = asyncio.get_running_loop()
+
         try:
-            salience_register(memory_id, content_preview=content[:200])
+            await loop.run_in_executor(None, salience_register, memory_id, content[:200])
         except Exception as e:
             logger.warning("salience register 失败: %s", e)
 
         # 版本追踪：保存初始版本
         try:
-            version_tracker.save_version(memory_id, content, reason="create")
+            await loop.run_in_executor(None, version_tracker.save_version, memory_id, content, "create")
         except Exception as e:
             logger.warning("version_tracker init 失败: %s", e)
 
         # FTS5 双写
         try:
             from wrapper.fts5_store import get_fts5
-            get_fts5().write(memory_id, content, user_id)
+            await loop.run_in_executor(None, get_fts5().write, memory_id, content, user_id)
         except Exception as e:
             logger.warning("FTS5 write 失败: %s", e)
 
@@ -761,7 +763,8 @@ async def search_memory(req: SearchRequest, request: Request):
 
     # salience boost（排序前：让高频记忆排更前）
     try:
-        results = boost_salience_for_results(results)
+        loop = asyncio.get_running_loop()
+        results = await loop.run_in_executor(None, boost_salience_for_results, results)
     except Exception as e:
         logger.debug("salience boost 失败: %s", e)
 
@@ -883,16 +886,17 @@ async def delete_memory_confirm(req: DeleteRequest, request: Request):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Delete failed: {e}")
     
-    # 3. salience 清理
+    # 3. salience 清理（异步化）
+    loop = asyncio.get_running_loop()
     try:
-        salience_delete(req.memory_id)
+        await loop.run_in_executor(None, salience_delete, req.memory_id)
     except Exception as e:
         logger.warning("salience delete 失败: %s", e)
     
-    # 5. FTS5 清理
+    # 5. FTS5 清理（异步化）
     try:
         from wrapper.fts5_store import get_fts5
-        get_fts5().delete(req.memory_id)
+        await loop.run_in_executor(None, get_fts5().delete, req.memory_id)
     except Exception as e:
         logger.debug("FTS5 delete 失败: %s", e)
 

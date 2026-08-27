@@ -199,7 +199,10 @@ def delete(memory_id: str) -> None:
 
 
 def boost_salience_for_results(results: List[dict]) -> List[dict]:
-    """搜索结果返回后，批量 boost salience 并注入 heat 分数。"""
+    """搜索结果返回后，批量 boost salience 并注入 heat 分数。
+    
+    同时更新 FSRS card 状态（记录访问），统一遗忘模型。
+    """
     if not results:
         return results
 
@@ -213,11 +216,26 @@ def boost_salience_for_results(results: List[dict]) -> List[dict]:
     # 获取更新后的 salience
     salience_map = get_batch_salience(ids)
 
-    # 注入 heat 分数到结果
+    # 注入 heat 分数 + 更新 FSRS card
+    try:
+        from wrapper.fsrs_bridge import record_access as fsrs_record_access
+        _fsrs_available = True
+    except ImportError:
+        _fsrs_available = False
+
     for r in results:
         mid = r.get("id")
         if mid and mid in salience_map:
             r["heat"] = salience_map[mid]
+        # 更新 FSRS card（异步操作，fire-and-forget）
+        if _fsrs_available and mid:
+            try:
+                metadata = r.get("metadata") or {}
+                if metadata.get("fsrs_card"):
+                    new_meta = fsrs_record_access(metadata)
+                    r["metadata"] = {**metadata, **new_meta}
+            except Exception:
+                pass
 
     return results
 

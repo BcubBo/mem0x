@@ -756,9 +756,30 @@ async def run_consolidation_cycle(
                 merged_text = _pick_best_memory(memories)
                 strategy = "pick_best"
             elif avg_cosine >= 0.88:
-                # Near Dup：关键词拼接，不调 LLM
-                merged_text = _merge_keywords(memories)
-                strategy = "keyword_merge"
+                # Near Dup：根据 Jaccard 决定用 LLM 合并还是关键词拼接
+                # 提取所有记忆的关键词集合，算平均 Jaccard
+                all_kw = [set(re.findall(r'[\u4e00-\u9fff]{2,}|[A-Za-z]+|\d+', m.get("memory", ""))) for m in memories]
+                if len(all_kw) >= 2:
+                    pairwise = [_jaccard(all_kw[i], all_kw[j])
+                                 for i in range(len(all_kw)) for j in range(i+1, len(all_kw))]
+                    avg_jaccard = sum(pairwise) / len(pairwise) if pairwise else 1.0
+                else:
+                    avg_jaccard = 1.0
+
+                if avg_jaccard < 0.3:
+                    # Jaccard 低 → 碎片差异大，用 LLM 合并
+                    try:
+                        llm = _get_consolidation_llm(memory)
+                        merged_text = _merge_with_llm(source_texts, llm)
+                        strategy = "llm_merge"
+                    except Exception as e:
+                        logger.debug("LLM 合并失败，降级到关键词拼接: %s", e)
+                        merged_text = _merge_keywords(memories)
+                        strategy = "keyword_merge"
+                else:
+                    # Jaccard 高 → 关键词拼接即可
+                    merged_text = _merge_keywords(memories)
+                    strategy = "keyword_merge"
             else:
                 # 低相似度：跳过（不合并）
                 logger.debug("cosine=%.2f < 0.88，跳过", avg_cosine)

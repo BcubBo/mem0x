@@ -567,6 +567,14 @@ async def add_memory(req: AddRequest, request: Request):
 
     logger.debug("📥 add: user=%s, agent=%s, content_len=%d", user_id, agent_id, len(content))
 
+    # 训练 BM25 IDF（同步，放线程池）
+    try:
+        from wrapper.sparse_vector import get_bm25_encoder
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, get_bm25_encoder().encode, content)
+    except Exception:
+        pass
+
     # 初始化使用维度字段
     usage_metadata = {
         "search_count": 0,
@@ -609,10 +617,10 @@ async def add_memory(req: AddRequest, request: Request):
         except Exception as e:
             logger.warning("FTS5 write 失败: %s", e)
 
-        # tags hook：提取实体写入 Qdrant payload
+        # tags hook：提取实体写入 Qdrant payload（Qdrant set_payload，同步调用需放线程池）
         try:
             from wrapper.tags_hook import on_add
-            on_add(memory, memory_id, content)
+            await loop.run_in_executor(None, on_add, memory, memory_id, content)
         except Exception as e:
             logger.debug("tags_hook on_add 失败: %s", e)
 
@@ -852,10 +860,11 @@ async def delete_memory(req: DeleteRequest, request: Request):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Delete failed: {e}")
 
-    # 3. tags hook：清空 tags
+    # 3. tags hook：清空 tags（Qdrant set_payload，同步调用需放线程池）
+    loop = asyncio.get_running_loop()
     try:
         from wrapper.tags_hook import on_delete
-        on_delete(memory, req.memory_id)
+        await loop.run_in_executor(None, on_delete, memory, req.memory_id)
     except Exception as e:
         logger.debug("tags_hook on_delete 失败: %s", e)
 
@@ -903,7 +912,7 @@ async def delete_memory_confirm(req: DeleteRequest, request: Request):
     # 6. version_tracker 清理
     try:
         from wrapper import version_tracker
-        version_tracker.cleanup(req.memory_id)
+        await loop.run_in_executor(None, version_tracker.cleanup, req.memory_id)
     except Exception as e:
         logger.debug("version_tracker cleanup 失败: %s", e)
 
@@ -954,6 +963,7 @@ async def update_memory(req: UpdateRequest, request: Request):
     # PII 脱敏
     cleaned_content = redact_pii(cleaned_content)
 
+    loop = asyncio.get_running_loop()
     try:
         # 0. 版本追踪：更新前保存旧版本
         try:
@@ -961,8 +971,9 @@ async def update_memory(req: UpdateRequest, request: Request):
             if old_item:
                 old_content = old_item.get("memory", "")
                 old_meta = old_item.get("metadata") or {}
-                version_tracker.save_version(
-                    req.memory_id, old_content, old_meta, reason="update",
+                await loop.run_in_executor(
+                    None, version_tracker.save_version,
+                    req.memory_id, old_content, old_meta, "update",
                 )
         except Exception as e:
             logger.debug("version_tracker save 失败: %s", e)
@@ -996,14 +1007,14 @@ async def update_memory(req: UpdateRequest, request: Request):
         try:
             from wrapper.fts5_store import get_fts5
             _uid = request.headers.get("X-User-ID", "default")
-            get_fts5().write(req.memory_id, cleaned_content, _uid)
+            await loop.run_in_executor(None, get_fts5().write, req.memory_id, cleaned_content, _uid)
         except Exception as e:
             logger.debug("FTS5 update 失败: %s", e)
 
-        # 5. tags hook：更新 tags
+        # 5. tags hook：更新 tags（Qdrant set_payload，同步调用需放线程池）
         try:
             from wrapper.tags_hook import on_update
-            on_update(memory, req.memory_id, cleaned_content)
+            await loop.run_in_executor(None, on_update, memory, req.memory_id, cleaned_content)
         except Exception as e:
             logger.debug("tags_hook on_update 失败: %s", e)
         return {"status": "ok", "memory_id": req.memory_id}
@@ -1128,8 +1139,10 @@ async def add_core_memory(req: CoreMemoryRequest):
     except Exception:
         content = ""
 
-    ok = core_memory.add_core_memory(
-        req.memory_id, content, req.category, req.importance
+    loop = asyncio.get_running_loop()
+    ok = await loop.run_in_executor(
+        None, core_memory.add_core_memory,
+        req.memory_id, content, req.category, req.importance,
     )
     return {"status": "ok" if ok else "error", "memory_id": req.memory_id}
 
@@ -1137,31 +1150,37 @@ async def add_core_memory(req: CoreMemoryRequest):
 @app.post("/core-memory/remove", dependencies=[Depends(verify_api_key), Depends(rate_limit)])
 async def remove_core_memory(memory_id: str):
     """移除核心记忆标记。"""
-    ok = core_memory.remove_core_memory(memory_id)
+    loop = asyncio.get_running_loop()
+    ok = await loop.run_in_executor(None, core_memory.remove_core_memory, memory_id)
     return {"status": "ok" if ok else "error", "memory_id": memory_id}
 
 
 @app.get("/core-memory/check/{memory_id}", dependencies=[Depends(verify_api_key), Depends(rate_limit)])
 async def check_core_memory(memory_id: str):
     """检查是否为核心记忆。"""
+    loop = asyncio.get_running_loop()
+    is_core = await loop.run_in_executor(None, core_memory.is_core_memory, memory_id)
     return {
         "memory_id": memory_id,
-        "is_core": core_memory.is_core_memory(memory_id),
+        "is_core": is_core,
     }
 
 
 @app.get("/core-memory/list", dependencies=[Depends(verify_api_key), Depends(rate_limit)])
 async def list_core_memories(category: Optional[str] = None, limit: int = 100):
     """列出核心记忆。"""
+    loop = asyncio.get_running_loop()
+    memories = await loop.run_in_executor(None, core_memory.list_core_memories, category, limit)
     return {
-        "memories": core_memory.list_core_memories(category, limit),
+        "memories": memories,
     }
 
 
 @app.get("/core-memory/{memory_id}", dependencies=[Depends(verify_api_key), Depends(rate_limit)])
 async def get_core_memory(memory_id: str):
     """获取核心记忆详情。"""
-    result = core_memory.get_core_memory(memory_id)
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, core_memory.get_core_memory, memory_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Core memory not found")
     return result
@@ -1170,7 +1189,8 @@ async def get_core_memory(memory_id: str):
 @app.put("/core-memory/importance", dependencies=[Depends(verify_api_key)])
 async def update_importance(memory_id: str, importance: float):
     """更新核心记忆重要性。"""
-    ok = core_memory.update_importance(memory_id, importance)
+    loop = asyncio.get_running_loop()
+    ok = await loop.run_in_executor(None, core_memory.update_importance, memory_id, importance)
     return {"status": "ok" if ok else "error"}
 
 
@@ -1249,16 +1269,19 @@ async def reflect_logs(limit: int = 10):
 @app.get("/versions/stats", dependencies=[Depends(verify_api_key), Depends(rate_limit)])
 async def version_stats():
     """查询版本追踪统计。"""
+    loop = asyncio.get_running_loop()
+    total = await loop.run_in_executor(None, version_tracker.get_total_versions)
     return {
-        "total_versions": version_tracker.get_total_versions(),
+        "total_versions": total,
     }
 
 
 @app.get("/versions/{memory_id}", dependencies=[Depends(verify_api_key), Depends(rate_limit)])
 async def get_versions(memory_id: str, limit: int = 20):
     """查询记忆的版本历史（最新在前）。"""
-    versions = version_tracker.get_versions(memory_id, limit)
-    count = version_tracker.get_version_count(memory_id)
+    loop = asyncio.get_running_loop()
+    versions = await loop.run_in_executor(None, version_tracker.get_versions, memory_id, limit)
+    count = await loop.run_in_executor(None, version_tracker.get_version_count, memory_id)
     return {
         "memory_id": memory_id,
         "versions": versions,
@@ -1281,7 +1304,8 @@ async def rollback_version(memory_id: str, req: RollbackRequest):
         raise HTTPException(status_code=400, detail="Invalid memory_id format")
 
     # 1. 获取目标版本内容
-    target = version_tracker.get_version_content(memory_id, req.version)
+    loop = asyncio.get_running_loop()
+    target = await loop.run_in_executor(None, version_tracker.get_version_content, memory_id, req.version)
     if not target:
         raise HTTPException(status_code=404, detail=f"Version {req.version} not found")
 
@@ -1293,7 +1317,7 @@ async def rollback_version(memory_id: str, req: RollbackRequest):
         if current:
             current_content = current.get("memory", "")
             current_meta = current.get("metadata") or {}
-            version_tracker.save_version(memory_id, current_content, current_meta, reason="pre-rollback")
+            await loop.run_in_executor(None, version_tracker.save_version, memory_id, current_content, current_meta, "pre-rollback")
     except Exception as e:
         logger.debug("rollback: 保存当前版本失败: %s", e)
 
@@ -1316,7 +1340,8 @@ async def rollback_version(memory_id: str, req: RollbackRequest):
 @app.get("/archive/candidates", dependencies=[Depends(verify_api_key), Depends(rate_limit)])
 async def archive_candidates():
     """查询热知识候选（满足阈值但尚未归档的记忆）。"""
-    candidates = hot_archive.find_hot_candidates()
+    loop = asyncio.get_running_loop()
+    candidates = await loop.run_in_executor(None, hot_archive.find_hot_candidates)
     return {
         "candidates": candidates,
         "count": len(candidates),
@@ -1326,7 +1351,8 @@ async def archive_candidates():
 @app.post("/archive/run", dependencies=[Depends(verify_api_key), Depends(rate_limit)])
 async def archive_run():
     """手动触发热知识归档。"""
-    result = hot_archive.run_archive_cycle()
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, hot_archive.run_archive_cycle)
     return result
 
 

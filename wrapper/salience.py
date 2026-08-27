@@ -201,7 +201,7 @@ def delete(memory_id: str) -> None:
 def boost_salience_for_results(results: List[dict]) -> List[dict]:
     """搜索结果返回后，批量 boost salience 并注入 heat 分数。
     
-    同时更新 FSRS card 状态（记录访问），统一遗忘模型。
+    同时更新 FSRS card 状态（记录访问），统一遗忘模型，并持久化到 Qdrant。
     """
     if not results:
         return results
@@ -223,19 +223,49 @@ def boost_salience_for_results(results: List[dict]) -> List[dict]:
     except ImportError:
         _fsrs_available = False
 
+    fsrs_updates = []  # 收集需要持久化的 FSRS card 更新
     for r in results:
         mid = r.get("id")
         if mid and mid in salience_map:
             r["heat"] = salience_map[mid]
-        # 更新 FSRS card（异步操作，fire-and-forget）
+        # 更新 FSRS card
         if _fsrs_available and mid:
             try:
                 metadata = r.get("metadata") or {}
                 if metadata.get("fsrs_card"):
                     new_meta = fsrs_record_access(metadata)
                     r["metadata"] = {**metadata, **new_meta}
+                    fsrs_updates.append((mid, new_meta))
             except Exception:
                 pass
+
+    # 持久化 FSRS card 到 Qdrant（批量，单次 HTTP）
+    if fsrs_updates:
+        try:
+            import asyncio as _asyncio
+            from wrapper.mem0_runtime import get_memory
+            mem = get_memory()
+            if mem:
+                async def _persist_fsrs():
+                    for mid, new_meta in fsrs_updates:
+                        try:
+                            got = await mem.get(mid)
+                            if got:
+                                old_meta = got.get("metadata") or {}
+                                merged = {**old_meta, **new_meta}
+                                await mem.update(mid, got.get("memory") or got.get("content") or "", metadata=merged)
+                        except Exception:
+                            pass
+                try:
+                    _asyncio.run(_persist_fsrs())
+                except RuntimeError:
+                    _loop = _asyncio.new_event_loop()
+                    try:
+                        _loop.run_until_complete(_persist_fsrs())
+                    finally:
+                        _loop.close()
+        except Exception:
+            pass
 
     return results
 

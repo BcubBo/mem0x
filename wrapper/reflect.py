@@ -152,8 +152,8 @@ async def _analyze_system_health_inner(memory, user_id: str, agent_id: str) -> D
                         created = created.replace(tzinfo=timezone.utc)
                     if (now - created).days <= 7:
                         recent_count += 1
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("datetime parse failed: %s", e)
 
         if recent_count < 5:
             health["suggestions"].append("近期记忆较少，建议增加对话频率")

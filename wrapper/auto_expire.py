@@ -46,7 +46,8 @@ def _load_auto_expire_config() -> dict:
         from wrapper.mem0_runtime import load_config
         cfg = load_config()
         return cfg.get("auto_expire", {})
-    except Exception:
+    except Exception as e:
+        logger.warning("auto_expire config load: %s", e)
         return {}
 
 _ae_cfg = _load_auto_expire_config()
@@ -230,7 +231,8 @@ def _background_loop(interval: int = DEFAULT_INTERVAL):
                 from wrapper.fetch_all import get_distinct_user_ids
                 memory = get_memory()
                 user_ids = asyncio.run(get_distinct_user_ids(memory))
-            except Exception:
+            except Exception as e:
+                logger.debug("auto_expire get user_ids: %s", e)
                 user_ids = ["bo"]  # fallback
 
             total_deleted = 0
@@ -244,8 +246,8 @@ def _background_loop(interval: int = DEFAULT_INTERVAL):
         finally:
             try:
                 background_tasks_lock.release()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("auto_expire lock release: %s", e)
 
         time.sleep(interval)
 

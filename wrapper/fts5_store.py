@@ -37,7 +37,8 @@ def _load_config() -> dict:
         with open(config_path) as f:
             cfg = json.load(f)
         return {**_DEFAULTS, **cfg.get("fts5", {})}
-    except Exception:
+    except Exception as e:
+        logger.debug("fts5 config load: %s", e)
         return dict(_DEFAULTS)
 
 
@@ -111,7 +112,8 @@ class FTS5Store:
             )
             self._conn.execute("COMMIT")
             logger.debug("FTS5 write: id=%s user=%s len=%d", memory_id[:12], user_id, len(content))
-        except Exception:
+        except Exception as e:
+            logger.warning("fts5 write failed, rolling back: %s", e)
             self._conn.execute("ROLLBACK")
             raise
 
@@ -122,7 +124,8 @@ class FTS5Store:
             self._conn.execute("DELETE FROM fts5_meta WHERE memory_id = ?", (memory_id,))
             self._conn.execute("COMMIT")
             logger.debug("FTS5 delete: id=%s", memory_id[:12])
-        except Exception:
+        except Exception as e:
+            logger.warning("fts5 delete failed, rolling back: %s", e)
             self._conn.execute("ROLLBACK")
             raise
 
@@ -244,8 +247,8 @@ class FTS5Store:
                 (query, user_id, result_count, elapsed_ms, time.time()),
             )
             self._conn.commit()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("fts5 log query: %s", e)
 
     def get_query_history(self, user_id: str = "", limit: int = 20) -> list[dict]:
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
@@ -280,8 +283,8 @@ class FTS5Store:
                         (word, now, now),
                     )
             self._conn.commit()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("fts5 update hot words: %s", e)
 
     def get_hot_words(self, limit: int = 20) -> list[dict]:
         conn = sqlite3.connect(self.db_path, check_same_thread=False)

@@ -42,8 +42,8 @@ def card_from_metadata(metadata: dict, created_at: str = None) -> Card:
             dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
             card.due = dt
             card.last_review = dt
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("FSRS Card datetime parse: %s", e)
     return card
 
 
@@ -111,5 +111,6 @@ def _age_days(created_at: str = None) -> float:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return max((datetime.now(timezone.utc) - dt).days, 0)
-    except Exception:
+    except Exception as e:
+        logger.debug("FSRS age_days parse: %s", e)
         return 0.5

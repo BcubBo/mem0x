@@ -234,7 +234,8 @@ async def _update_usage_stats_sync(memory_instance, memory_ids: list):
         try:
             existing = await memory_instance.get(mid)
             return mid, existing.get("metadata", {}) if existing else {}
-        except Exception:
+        except Exception as e:
+            logger.warning("get_memory metadata failed for %s: %s", mid, e)
             return mid, {}
 
     results = await asyncio.gather(*[_get_meta(mid) for mid in valid_ids])
@@ -413,7 +414,7 @@ def _get_api_key() -> Optional[str]:
             _api_key_cache_at = time.time()
             return key
     except Exception:
-        pass
+        logger.debug("api_key load failed", exc_info=True)
     return None
 
 
@@ -759,7 +760,7 @@ async def search_memory(req: SearchRequest, request: Request):
             from security.utils import get_config
             wm_cfg = get_config().get("working_memory", {})
         except Exception:
-            pass
+            logger.debug("working_memory config load failed", exc_info=True)
         if wm_cfg.get("enabled", True):
             wm_items = await loop.run_in_executor(None, working_memory.list_items, user_id)
             wm_weight = wm_cfg.get("injection_weight", 1.5)
@@ -788,7 +789,7 @@ async def search_memory(req: SearchRequest, request: Request):
                 try:
                     await loop.run_in_executor(None, working_memory.touch, item["memory_id"], wm_ttl)
                 except Exception:
-                    pass
+                    logger.debug("working_memory touch failed", exc_info=True)
                 wm_injected += 1
             if wm_injected:
                 logger.info("🧠 working_memory: 注入 %d 条候选 (weight=%.1f)", wm_injected, wm_weight)
@@ -960,6 +961,7 @@ async def delete_memory(req: DeleteRequest, request: Request):
             metadata={"deleted_at": datetime.now(timezone.utc).isoformat()},
         )
     except Exception as e:
+        logger.warning("soft delete failed: %s", e)
         raise HTTPException(status_code=400, detail=f"Delete failed: {e}")
 
     # 3. tags hook：清空 tags（Qdrant set_payload，同步调用需放线程池）
@@ -995,6 +997,7 @@ async def delete_memory_confirm(req: DeleteRequest, request: Request):
     try:
         await _qdrant_retry(lambda: memory.delete(req.memory_id))
     except Exception as e:
+        logger.warning("hard delete failed: %s", e)
         raise HTTPException(status_code=400, detail=f"Delete failed: {e}")
     
     # 3. salience 清理（异步化）
@@ -1121,6 +1124,7 @@ async def update_memory(req: UpdateRequest, request: Request):
             logger.debug("tags_hook on_update 失败: %s", e)
         return {"status": "ok", "memory_id": req.memory_id}
     except Exception as e:
+        logger.warning("update memory failed: %s", e)
         raise HTTPException(status_code=500, detail=f"mem0 update failed: {e}")
 
 
@@ -1175,6 +1179,7 @@ async def get_stats():
                 result["qdrant"][name] = "error"
         result["qdrant"]["_total"] = total_points
     except Exception as e:
+        logger.warning("qdrant stats query failed: %s", e)
         result["qdrant"]["_error"] = str(e)
 
 
@@ -1443,6 +1448,7 @@ async def rollback_version(memory_id: str, req: RollbackRequest):
             "restored_content": target["content"],
         }
     except Exception as e:
+        logger.warning("rollback failed: %s", e)
         raise HTTPException(status_code=400, detail=f"Rollback failed: {e}")
 
 
@@ -1555,7 +1561,8 @@ def _filter_by_time(results: list, before: Optional[str], after: Optional[str]) 
                 if ts < after_dt:
                     continue
             filtered.append(r)
-        except Exception:
+        except Exception as e:
+            logger.warning("time filter parse failed: %s", e)
             filtered.append(r)
     return filtered
 

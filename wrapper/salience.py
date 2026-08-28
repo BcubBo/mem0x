@@ -58,7 +58,8 @@ def _get_config() -> dict:
         from security.utils import get_config
         cfg = get_config()
         return cfg.get("salience", {})
-    except Exception:
+    except Exception as e:
+        logger.warning("load salience config: %s", e)
         return {}
 
 
@@ -92,7 +93,8 @@ def _compute_fsrs_retrievability(memory_id: str) -> Optional[float]:
                 return loop.run_until_complete(_fetch())
             finally:
                 loop.close()
-    except Exception:
+    except Exception as e:
+        logger.warning("compute FSRS retrievability: %s", e)
         return None
 
 
@@ -266,8 +268,8 @@ def boost_salience_for_results(results: List[dict]) -> List[dict]:
                     new_meta = fsrs_record_access(metadata)
                     r["metadata"] = {**metadata, **new_meta}
                     fsrs_updates.append((mid, new_meta))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("FSRS record_access failed: %s", e)
 
     # working_memory TTL 刷新：搜索命中时重置 accessed_at
     try:
@@ -276,15 +278,15 @@ def boost_salience_for_results(results: List[dict]) -> List[dict]:
         try:
             from security.utils import get_config
             wm_cfg = get_config().get("working_memory", {})
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("load working_memory config failed: %s", e)
         wm_ttl = wm_cfg.get("default_ttl_days", 90)
         for mid in ids:
             if mid:
                 try:
                     wm_touch(mid, ttl_days=wm_ttl)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("working_memory touch failed for %s: %s", mid[:16], e)
     except ImportError:
         pass
 
@@ -303,8 +305,8 @@ def boost_salience_for_results(results: List[dict]) -> List[dict]:
                                 old_meta = got.get("metadata") or {}
                                 merged = {**old_meta, **new_meta}
                                 await mem.update(mid, got.get("memory") or got.get("content") or "", metadata=merged)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                                logger.debug("persist FSRS card for %s failed: %s", mid[:16], e)
                 try:
                     _asyncio.run(_persist_fsrs())
                 except RuntimeError:
@@ -313,8 +315,8 @@ def boost_salience_for_results(results: List[dict]) -> List[dict]:
                         _loop.run_until_complete(_persist_fsrs())
                     finally:
                         _loop.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("persist FSRS batch update: %s", e)
 
     return results
 

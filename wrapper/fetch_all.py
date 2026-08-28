@@ -138,7 +138,8 @@ async def get_distinct_user_ids(memory_instance) -> List[str]:
                 with_payload=True,
                 with_vectors=False,
             )
-        except Exception:
+        except Exception as e:
+            logger.debug("fetch_all scroll: %s", e)
             break
         if not pts:
             break

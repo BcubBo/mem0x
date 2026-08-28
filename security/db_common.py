@@ -2,11 +2,13 @@
 
 统一 _get_db_path / _get_db / _ensure_schema，避免 salience/conflict/version_tracker 三处重复。
 """
+import logging
 import os
 import sqlite3
 import threading
 from typing import Optional
 
+logger = logging.getLogger("mem0x.security.db_common")
 _lock = threading.Lock()
 
 
@@ -38,7 +40,7 @@ def ensure_schema(name: str, schema_sql: list[str], checked_flag: dict) -> None:
                 conn.execute(sql)
             conn.commit()
             checked_flag[name] = True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("ensure_schema failed for %s: %s", name, e, exc_info=True)
         finally:
             conn.close()

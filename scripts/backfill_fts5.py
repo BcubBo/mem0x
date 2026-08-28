@@ -17,11 +17,14 @@
 
 import argparse
 import json
+import logging
 import os
 import sys
 import time
 import urllib.request
 import urllib.error
+
+logger = logging.getLogger("mem0x.backfill")
 
 # ── 配置 ──
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://127.0.0.1:26333")
@@ -72,8 +75,8 @@ def main():
     try:
         rows = fts5._conn.execute("SELECT memory_id FROM fts5_meta").fetchall()
         existing_ids = {row[0] for row in rows}
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("fts5_meta query", exc_info=True)
     print(f"FTS5 已有记录: {len(existing_ids)}")
 
     # Scroll Qdrant 获取所有活跃记忆
@@ -92,6 +95,7 @@ def main():
         try:
             result = qdrant_scroll(offset=offset, limit=args.batch_size)
         except Exception as e:
+            logger.warning("Qdrant scroll: %s", e)
             print(f"Qdrant scroll 失败: {e}")
             break
 
@@ -134,6 +138,7 @@ def main():
                     try:
                         fts5.write(mid, text, uid)
                     except Exception as e:
+                        logger.warning("FTS5 write %s: %s", mid[:12], e)
                         failed += 1
                         print(f"  写入失败 {mid[:12]}: {e}")
                 fts5._conn.commit()
@@ -151,6 +156,7 @@ def main():
             try:
                 fts5.write(mid, text, uid)
             except Exception as e:
+                logger.warning("FTS5 write remaining %s: %s", mid[:12], e)
                 failed += 1
                 print(f"  写入失败 {mid[:12]}: {e}")
         fts5._conn.commit()

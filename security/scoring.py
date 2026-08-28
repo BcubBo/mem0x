@@ -69,8 +69,8 @@ def _extract_timestamp(item: dict) -> float:
         if isinstance(val, str) and val.strip():
             try:
                 return datetime.fromisoformat(val.replace("Z", "+00:00")).timestamp()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("timestamp parse failed: %s", e, exc_info=True)
     md = item.get("metadata") or {}
     if isinstance(md, dict):
         for key in ("timestamp", "created_at", "recorded_at", "updated_at"):

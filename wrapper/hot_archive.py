@@ -29,7 +29,8 @@ def _get_config() -> dict:
     try:
         from security.utils import get_config
         return get_config().get("hot_archive", {})
-    except Exception:
+    except Exception as e:
+        logger.debug("hot_archive config load: %s", e)
         return {}
 
 
@@ -51,8 +52,8 @@ def find_hot_candidates() -> List[Dict[str, Any]]:
     try:
         from security.utils import get_data_dir
         db_path = os.path.join(get_data_dir(), "salience.db")
-    except Exception:
-        logger.debug("hot_archive: get_data_dir 失败")
+    except Exception as e:
+        logger.debug("hot_archive: get_data_dir 失败: %s", e)
         return []
 
     if not os.path.exists(db_path):

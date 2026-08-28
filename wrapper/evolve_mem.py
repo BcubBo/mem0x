@@ -22,7 +22,8 @@ def _load_config():
         from wrapper.mem0_runtime import load_config
         config = load_config()
         return config.get("evolve_mem", {})
-    except Exception:
+    except Exception as e:
+        logger.warning("load evolve_mem config: %s", e)
         return {}
 
 _cfg = _load_config()
@@ -138,8 +139,8 @@ async def process_memory_quality(memory, user_id: str = "bo", agent_id: str = "h
                                 created = created.replace(tzinfo=timezone.utc)
                             if (datetime.now(timezone.utc) - created).days > 365:
                                 stats["stale"] += 1
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug("stale date parse failed: %s", e)
 
                 total += len(batch)
                 stats["total"] = total
@@ -225,8 +226,8 @@ async def run_evolve_cycle(memory, user_id: str = "bo",
                                         created = created.replace(tzinfo=timezone.utc)
                                     if datetime.now(timezone.utc) - created < timedelta(days=7):
                                         continue
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug("new-memory date check failed: %s", e)
                             try:
                                 await memory.delete(mem_id)
                                 sync_after_delete(mem_id, user_id)

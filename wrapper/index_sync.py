@@ -17,7 +17,8 @@ def _get_fts5():
     try:
         from wrapper.fts5_store import get_fts5
         return get_fts5()
-    except Exception:
+    except Exception as e:
+        logger.warning("fts5 not available: %s", e)
         return None
 
 
@@ -26,7 +27,8 @@ def _get_salience():
     try:
         from wrapper import salience
         return salience
-    except Exception:
+    except Exception as e:
+        logger.warning("salience not available: %s", e)
         return None
 
 
@@ -35,7 +37,8 @@ def _get_version_tracker():
     try:
         from wrapper import version_tracker
         return version_tracker
-    except Exception:
+    except Exception as e:
+        logger.warning("version_tracker not available: %s", e)
         return None
 
 
@@ -121,8 +124,8 @@ def sync_after_merge(new_id: str, old_ids: list, merged_text: str,
             for old_id in old_ids:
                 try:
                     sal.delete(old_id)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("IndexSync: salience delete old_id %s failed: %s", old_id[:8], e)
             logger.debug("IndexSync: salience 合并 %d→1", len(old_ids))
         except Exception as e:
             logger.warning("IndexSync: salience 合并失败: %s", e)

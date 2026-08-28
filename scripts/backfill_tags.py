@@ -14,10 +14,13 @@
 
 import argparse
 import json
+import logging
 import sys
 import time
 import urllib.request
 import urllib.error
+
+logger = logging.getLogger("mem0x.backfill")
 
 # ── 配置 ──
 QDRANT_URL = "http://127.0.0.1:26333"
@@ -46,11 +49,13 @@ def extract_tags_spacy(content: str, top_n: int = 10) -> list[str]:
     try:
         import spacy
         nlp = spacy.load("zh_core_web_sm")
-    except Exception:
+    except Exception as e:
+        logger.warning("spaCy zh model load: %s", e)
         try:
             import spacy
             nlp = spacy.load("en_core_web_sm")
         except Exception as e:
+            logger.warning("spaCy en model load: %s", e)
             print(f"  ⚠️ spaCy 模型加载失败: {e}", file=sys.stderr)
             return []
 
@@ -70,6 +75,7 @@ def extract_tags_spacy(content: str, top_n: int = 10) -> list[str]:
         counter = Counter(entities)
         return [word for word, _ in counter.most_common(top_n)]
     except Exception as e:
+        logger.warning("NER extraction: %s", e)
         print(f"  ⚠️ NER 失败: {e}", file=sys.stderr)
         return []
 
@@ -187,10 +193,12 @@ def main():
         try:
             nlp = spacy.load("zh_core_web_sm")
             print("   模型: zh_core_web_sm")
-        except Exception:
+        except Exception as e:
+            logger.warning("spaCy zh model load in main: %s", e)
             nlp = spacy.load("en_core_web_sm")
             print("   模型: en_core_web_sm (降级)")
     except Exception as e:
+        logger.warning("spaCy unavailable: %s", e)
         print(f"   ❌ spaCy 不可用: {e}")
         sys.exit(1)
 
@@ -221,7 +229,8 @@ def main():
             if tags:
                 updates.append({"id": item["id"], "tags": tags})
                 ner_count += 1
-        except Exception:
+        except Exception as e:
+            logger.warning("NER processing for id=%s: %s", item["id"][:12], e)
             skip_count += 1
 
         # 每 500 条打印进度

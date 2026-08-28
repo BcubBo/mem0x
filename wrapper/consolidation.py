@@ -29,7 +29,8 @@ def _load_config():
         from wrapper.mem0_runtime import load_config
         config = load_config()
         return config.get("consolidation", {})
-    except Exception:
+    except Exception as e:
+        logger.warning("load_config: %s", e)
         return {}
 
 _cfg = _load_config()
@@ -57,6 +58,10 @@ MAX_CANDIDATES = _cfg.get("max_candidates", 2000)
 EXACT_DUP_THRESHOLD = _cfg.get("exact_dup_threshold", 0.95)
 NEAR_DUP_THRESHOLD = _cfg.get("near_dup_threshold", 0.88)
 
+# LLM 摘要压缩阈值
+LLM_MERGE_THRESHOLD = _cfg.get("llm_merge_threshold", 500)  # 合并文本总长度超过此值走LLM摘要
+LLM_MERGE_MAX_GROUPS = _cfg.get("llm_merge_max_groups", 5)  # 每轮最多LLM摘要合并组数
+
 # 记忆最小长度（太短的不合并）
 MIN_MEMORY_LENGTH = 15
 
@@ -77,7 +82,8 @@ def _get_redis():
         _redis_client = redis.Redis(host="mem0x-redis", port=6379, db=0, decode_responses=True)
         _redis_client.ping()
         return _redis_client
-    except Exception:
+    except Exception as e:
+        logger.warning("redis connection: %s", e)
         return None
 
 
@@ -93,8 +99,8 @@ def _get_cursor(user_id: str = "bo") -> dict:
             val = r.get(f"consolidation:cursor:{user_id}")
             if val:
                 return json.loads(val)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("redis cursor read: %s", e)
     return {"offset": 0, "last_run": None, "total_rounds": 0}
 
 
@@ -113,8 +119,8 @@ def _set_cursor(user_id: str, offset: int, total_candidates: int):
                 "total_candidates": total_candidates,
             }
             r.set(f"consolidation:cursor:{user_id}", json.dumps(state), ex=86400 * 30)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("redis cursor write: %s", e)
 
 
 # ═══════════════════════════════════════════════════════
@@ -212,7 +218,8 @@ def _get_archived_ids() -> Set[str]:
     try:
         rows = conn.execute("SELECT memory_id FROM archived_memories").fetchall()
         return {r[0] for r in rows}
-    except Exception:
+    except Exception as e:
+        logger.warning("get_archived_ids: %s", e)
         return set()
     finally:
         conn.close()
@@ -239,11 +246,11 @@ def _is_already_merged(source_ids: List[str]) -> bool:
                 try:
                     ids_tuple = tuple(sorted(json.loads(r[0])))
                     _merge_cache.add(ids_tuple)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("merge_cache json parse: %s", e)
             _merge_cache_at = now
-        except Exception:
-            _merge_cache = set()
+        except Exception as e:
+            logger.warning("merge_cache load: %s", e)
         finally:
             conn.close()
 
@@ -394,6 +401,23 @@ MERGE_PROMPT = """你是一个记忆整合专家。给定一组关于同一主�
 
 请输出合并后的完整事实（只输出事实本身，不要解释）："""
 
+LLM_SUMMARIZE_PROMPT = """你是一个记忆整合专家。给定一组关于同一主题的碎片记忆（总文本较长），请将它们压缩为一条简洁、完整的摘要。
+
+规则：
+1. 保留所有关键事实（端口号、配置路径、版本号等具体值）
+2. 如果有变更历史（如"端口从A改为B"），保留最终状态并简要提及变更
+3. 去除重复信息和冗余描述
+4. 压缩到原文 30%-50% 长度，保持信息密度
+5. 输出一条简洁、完整的事实陈述（中文）
+6. 不要添加碎片中没有的信息
+7. 保持原有标签格式（如 [P0][tech] 等）
+8. 在末尾标注来源引用：[来源: 记忆ID1, 记忆ID2, ...]
+
+碎片记忆：
+{fragments}
+
+请输出压缩后的摘要（只输出摘要本身，不要解释）："""
+
 
 def _get_consolidation_llm(memory):
     """获取 consolidation 专用 LLM 客户端。
@@ -433,12 +457,22 @@ def _get_consolidation_llm(memory):
 
 
 def _merge_with_llm(
-    fragments: List[str], llm_client, max_retries: int = 2
+    fragments: List[str], llm_client, max_retries: int = 2,
+    source_ids: Optional[List[str]] = None, summarize: bool = False,
 ) -> Optional[str]:
-    """用 LLM 合并多条碎片记忆。"""
+    """用 LLM 合并多条碎片记忆。
+
+    Args:
+        summarize: True 时使用压缩摘要模式（用于长文本），保留来源引用
+        source_ids: 原始记忆 ID 列表，摘要模式下会在 prompt 中标注
+    """
     # 格式化碎片
     frag_text = "\n".join(f"  [{i+1}] {f}" for i, f in enumerate(fragments))
-    prompt = MERGE_PROMPT.format(fragments=frag_text)
+    if summarize and source_ids:
+        frag_text += "\n\n来源ID：" + ", ".join(source_ids)
+        prompt = LLM_SUMMARIZE_PROMPT.format(fragments=frag_text)
+    else:
+        prompt = MERGE_PROMPT.format(fragments=frag_text)
 
     messages = [{"role": "user", "content": prompt}]
 
@@ -453,7 +487,9 @@ def _merge_with_llm(
                    (merged.startswith("'") and merged.endswith("'")):
                     merged = merged[1:-1]
                 # 去掉 "合并结果：" 之类的前缀
-                for prefix in ["合并结果：", "合并结果:", "合并后：", "合并后:", "结果：", "结果:"]:
+                for prefix in ["合并结果：", "合并结果:", "合并后：", "合并后:",
+                               "结果：", "结果:", "摘要：", "摘要:",
+                               "压缩结果：", "压缩结果:"]:
                     if merged.startswith(prefix):
                         merged = merged[len(prefix):].strip()
                 if merged and len(merged) >= MIN_MEMORY_LENGTH:
@@ -726,6 +762,7 @@ async def run_consolidation_cycle(
         return 0
 
     merged_count = 0
+    llm_merge_count = 0  # 本轮 LLM 摘要合并计数
     try:
         groups = await find_merge_groups(memory, user_id, agent_id)
 
@@ -741,16 +778,21 @@ async def run_consolidation_cycle(
 
             source_ids = [item.get("id", "") for item in memories]
             source_texts = [item.get("memory", "") for item in memories]
+            total_text_len = sum(len(t) for t in source_texts)
 
             # 检查是否已合并过
             if _is_already_merged(source_ids):
                 logger.debug("跳过已合并组: %s", source_ids[0][:8])
                 continue
 
-            logger.info("合并 %d 条碎片 (cosine=%.2f): %s ...",
-                        len(memories), avg_cosine, source_texts[0][:50])
+            logger.info("合并 %d 条碎片 (cosine=%.2f, 总长%d): %s ...",
+                        len(memories), avg_cosine, total_text_len, source_texts[0][:50])
 
             # 按相似度分层选择合并策略
+            merged_text = None
+            strategy = None
+            llm = None
+
             if avg_cosine >= EXACT_DUP_THRESHOLD:
                 # Exact Dup：选最佳记忆，不调 LLM
                 merged_text = _pick_best_memory(memories)
@@ -774,16 +816,34 @@ async def run_consolidation_cycle(
                         strategy = "llm_merge"
                     except Exception as e:
                         logger.debug("LLM 合并失败，降级到关键词拼接: %s", e)
-                        merged_text = _merge_keywords(memories)
-                        strategy = "keyword_merge"
-                else:
-                    # Jaccard 高 → 关键词拼接即可
+                if not merged_text:
                     merged_text = _merge_keywords(memories)
                     strategy = "keyword_merge"
             else:
                 # 低相似度：跳过（不合并）
                 logger.debug("cosine=%.2f < 0.88，跳过", avg_cosine)
                 continue
+
+            # ── LLM 摘要压缩：文本总长度超阈值时走 LLM 摘要 ──
+            if (total_text_len > LLM_MERGE_THRESHOLD
+                    and llm_merge_count < LLM_MERGE_MAX_GROUPS
+                    and strategy != "pick_best"):
+                if llm is None:
+                    try:
+                        llm = _get_consolidation_llm(memory)
+                    except Exception as e:
+                        logger.debug("consolidation LLM fallback failed: %s", e)
+                        llm = None
+                if llm is not None:
+                    summarize_text = _merge_with_llm(
+                        source_texts, llm, source_ids=source_ids, summarize=True,
+                    )
+                    if summarize_text:
+                        merged_text = summarize_text
+                        strategy = "llm_summarize"
+                        llm_merge_count += 1
+                        logger.info("LLM 摘要压缩: %d 字 → %d 字 (本轮第%d组)",
+                                    total_text_len, len(merged_text), llm_merge_count)
 
             if not merged_text:
                 logger.warning("合并失败，跳过这组")

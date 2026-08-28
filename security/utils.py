@@ -5,8 +5,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
+
+logger = logging.getLogger("mem0x.security.utils")
 
 # ── 路径配置 ──────────────────────────────────────────────────
 HOME_DIR = Path.home()
@@ -47,7 +50,8 @@ def get_user_id() -> str:
         with open(CONFIG_PATH) as f:
             cfg = json.load(f)
         return cfg.get("user_id", "default")
-    except Exception:
+    except Exception as e:
+        logger.debug("get_user_id config read failed: %s", e, exc_info=True)
         return "default"
 
 
@@ -78,8 +82,8 @@ def get_data_dir() -> str:
         if data_dir:
             os.makedirs(data_dir, exist_ok=True)
             return data_dir
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("get_data_dir config read failed: %s", e, exc_info=True)
 
     # 3. ~/.mem0x/data/
     default_dir = MEM0X_HOME / "data"

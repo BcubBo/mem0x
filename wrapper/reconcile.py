@@ -36,7 +36,8 @@ def _load_config() -> dict:
         with open(config_path) as f:
             cfg = json.load(f)
         return cfg.get("reconcile", {})
-    except Exception:
+    except Exception as e:
+        logger.warning("load_config: %s", e)
         return {}
 
 
@@ -146,8 +147,8 @@ def _collect_fts5_ids() -> Set[str]:
     try:
         from wrapper.fts5_store import get_fts5
         fts5 = get_fts5()
-    except Exception:
-        logger.warning("reconcile: FTS5 不可用")
+    except Exception as e:
+        logger.warning("reconcile: FTS5 不可用: %s", e)
         return set()
 
     ids: Set[str] = set()
@@ -167,8 +168,8 @@ def _collect_salience_ids() -> Set[str]:
     try:
         from wrapper.salience import _get_db
         conn = _get_db()
-    except Exception:
-        logger.warning("reconcile: salience 不可用")
+    except Exception as e:
+        logger.warning("reconcile: salience 不可用: %s", e)
         return set()
 
     ids: Set[str] = set()
@@ -380,8 +381,8 @@ def _background_loop(interval: int):
             finally:
                 try:
                     background_tasks_lock.release()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("reconcile: lock release failed: %s", e)
         except Exception as e:
             logger.error("reconcile 循环异常: %s", e)
 

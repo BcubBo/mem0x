@@ -23,7 +23,8 @@ def _get_nlp():
             import spacy
             _nlp = spacy.load("zh_core_web_sm")
             logger.info("spaCy 中文模型加载成功")
-        except Exception:
+        except Exception as e:
+            logger.debug("spaCy zh model load failed: %s", e)
             try:
                 import spacy
                 _nlp = spacy.load("en_core_web_sm")

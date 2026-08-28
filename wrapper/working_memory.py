@@ -39,7 +39,8 @@ def _get_config() -> dict:
     try:
         from security.utils import get_config
         return get_config().get("working_memory", {})
-    except Exception:
+    except Exception as e:
+        logger.warning("working_memory config load: %s", e)
         return {}
 
 

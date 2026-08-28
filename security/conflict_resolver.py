@@ -523,8 +523,8 @@ async def _detect_and_resolve_inner(memory, new_text: str, filters: dict, auto_a
             try:
                 from wrapper.tags_hook import on_update
                 on_update(memory, mid, old_text)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("tags hook on_update failed: %s", e, exc_info=True)
             _log_conflict(mid, old_text, new_text, reason, "rule_match" if rule_matched else "llm_judge")
             conflicts.append({
                 "memory_id": mid,
@@ -593,6 +593,7 @@ async def resolve_pending(memory, memory_id: str, approve: bool = True) -> dict:
         await memory.update(memory_id, old_text, metadata=old_meta)
         return {"status": "ok", "action": "archived" if approve else "ignored"}
     except Exception as e:
+        logger.warning("resolve_pending failed: %s", e)
         return {"status": "error", "detail": str(e)}
 
 
@@ -616,13 +617,14 @@ async def rollback_conflict(memory_id: str, memory=None) -> dict:
         try:
             from wrapper.tags_hook import on_update
             on_update(memory, memory_id, old_text)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("tags hook on_update failed during rollback: %s", e, exc_info=True)
 
         logger.info("↩️ conflict 回滚: %s", memory_id[:8])
         return {"status": "ok", "memory_id": memory_id}
 
     except Exception as e:
+        logger.warning("rollback_conflict failed: %s", e)
         return {"status": "error", "detail": str(e)}
 
 

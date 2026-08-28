@@ -101,8 +101,8 @@ def get_versions(memory_id: str, limit: int = 20) -> List[Dict[str, Any]]:
             meta = {}
             try:
                 meta = json.loads(r["metadata"])
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("version_tracker metadata parse: %s", e)
             results.append({
                 "version": r["version"],
                 "content": r["content"],
@@ -128,7 +128,8 @@ def get_version_count(memory_id: str) -> int:
             (memory_id,),
         ).fetchone()
         return row[0] if row else 0
-    except Exception:
+    except Exception as e:
+        logger.debug("version_tracker get_version_count: %s", e)
         return 0
     finally:
         conn.close()
@@ -141,7 +142,8 @@ def get_total_versions() -> int:
     try:
         row = conn.execute("SELECT COUNT(*) FROM versions").fetchone()
         return row[0] if row else 0
-    except Exception:
+    except Exception as e:
+        logger.debug("version_tracker get_total_versions: %s", e)
         return 0
     finally:
         conn.close()

@@ -171,8 +171,8 @@ def _get_context() -> dict:
                 "chat_type":  ctx.get("chat_type", ""),
                 "request_id": ctx.get("message_id", ""),
             }
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("get_context: %s", e, exc_info=True)
     return {}
 
 

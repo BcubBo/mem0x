@@ -1,0 +1,97 @@
+# Embedding 集群：nginx 负载均衡 + 4 节点 bge-m3 CPU
+# 每节点 7 workers，共 28 并发
+# 启动: sudo docker compose -f docker-compose.embedding-nginx.yml up -d
+#
+# 前置条件：
+#   1. 下载 bge-m3 模型（首次需要网络，约 2GB）：
+#      pip install fastembed
+#      python -c "from fastembed import TextEmbedding; TextEmbedding('BAAI/bge-m3')"
+#      模型缓存在 ~/.cache/fastembed/，复制到 ./data/fastembed/bge-m3/
+#   2. embedding 和 nginx 镜像需要单独构建（Dockerfile 不在本仓库）
+
+networks:
+  mem0x-net:
+    external: true
+
+services:
+  nginx:
+    image: mem0x-embedding-nginx:latest
+    container_name: mem0x-embedding-nginx
+    depends_on:
+      - n8
+      - n9
+      - n10
+      - n11
+    ports:
+      - "127.0.0.1:28770:8775"
+    restart: unless-stopped
+    networks:
+      - mem0x-net
+
+  n8:
+    image: mem0x-embedding:latest
+    container_name: mem0x-embedding-n8
+    restart: unless-stopped
+    mem_limit: 2g
+    ports:
+      - "127.0.0.1:28781:8781"
+    volumes:
+      - ./data/fastembed/bge-m3:/app/models/BAAI/bge-m3:ro
+    environment:
+      EMBEDDING_MODEL: "BAAI/bge-m3"
+      EMBEDDING_MODEL_PATH: "/app/models/BAAI/bge-m3"
+      PORT: "8781"
+      WORKERS: "7"
+    networks:
+      - mem0x-net
+
+  n9:
+    image: mem0x-embedding:latest
+    container_name: mem0x-embedding-n9
+    restart: unless-stopped
+    mem_limit: 2g
+    ports:
+      - "127.0.0.1:28782:8782"
+    volumes:
+      - ./data/fastembed/bge-m3:/app/models/BAAI/bge-m3:ro
+    environment:
+      EMBEDDING_MODEL: "BAAI/bge-m3"
+      EMBEDDING_MODEL_PATH: "/app/models/BAAI/bge-m3"
+      PORT: "8782"
+      WORKERS: "7"
+    networks:
+      - mem0x-net
+
+  n10:
+    image: mem0x-embedding:latest
+    container_name: mem0x-embedding-n10
+    restart: unless-stopped
+    mem_limit: 2g
+    ports:
+      - "127.0.0.1:28783:8783"
+    volumes:
+      - ./data/fastembed/bge-m3:/app/models/BAAI/bge-m3:ro
+    environment:
+      EMBEDDING_MODEL: "BAAI/bge-m3"
+      EMBEDDING_MODEL_PATH: "/app/models/BAAI/bge-m3"
+      PORT: "8783"
+      WORKERS: "7"
+    networks:
+      - mem0x-net
+
+  n11:
+    image: mem0x-embedding:latest
+    container_name: mem0x-embedding-n11
+    restart: unless-stopped
+    mem_limit: 2g
+    ports:
+      - "127.0.0.1:28784:8784"
+    volumes:
+      - ./data/fastembed/bge-m3:/app/models/BAAI/bge-m3:ro
+    environment:
+      EMBEDDING_MODEL: "BAAI/bge-m3"
+      EMBEDDING_MODEL_PATH: "/app/models/BAAI/bge-m3"
+      PORT: "8784"
+      WORKERS: "7"
+    networks:
+      - mem0x-net

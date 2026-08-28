@@ -46,6 +46,11 @@ mem0x/
 ├── config.json                  # 本地开发配置（生产由 compose 挂载覆盖）
 ├── config-compose.json.example  # 生产配置模板
 ├── config.json.example          # 本地开发配置模板
+├── docker-compose.mem0x.yml.example         # API 服务 compose 模板
+├── docker-compose.mem0x-qdrant.yml.example  # Qdrant compose 模板
+├── docker-compose.redis.yml.example         # Redis compose 模板
+├── docker-compose.embedding-nginx.yml.example  # Embedding 集群 compose 模板
+├── docker-compose.reranker.yml.example      # Reranker 集群 compose 模板
 │
 ├── security/                    # 安全层
 │   ├── pipeline.py              # 写入链路编排：注入防御→PII脱敏→去重→矛盾消解→语义判重
@@ -126,9 +131,9 @@ mkdir -p ~/.mem0x/data
 cd ~/.mem0x
 
 # 1. 复制配置模板并填入你的 API key
-cp /path/to/mem0x/config-compose.json.example ~/.mem0x/config-compose.json
-cp /path/to/mem0x/docker-compose.mem0x.yml.example ~/.mem0x/docker-compose.mem0x.yml
-cp /path/to/mem0x/docker-compose.mem0x-qdrant.yml.example ~/.mem0x/docker-compose.mem0x-qdrant.yml
+cp /path/to/mem0x/*.example ~/.mem0x/
+cd ~/.mem0x
+for f in *.example; do cp "$f" "${f%.example}"; done
 
 # 2. 编辑配置（必须修改的项）
 #    - mem0.llm.config.api_key
@@ -168,11 +173,11 @@ sudo docker compose -f docker-compose.mem0x.yml up -d
 
 | 文件 | 用途 |
 |------|------|
-| `docker-compose.redis.yml` | Redis：速率限制 + 工作记忆缓存 + consolidation 游标 |
-| `docker-compose.mem0x-qdrant.yml` | Qdrant：向量存储 |
-| `docker-compose.mem0x.yml` | mem0x API 服务 |
-| `docker-compose.embedding-nginx.yml` | Embedding 集群：nginx 负载均衡 + 4 节点 bge-m3 |
-| `docker-compose.reranker.yml` | Reranker 集群：nginx + 2 节点 bge-reranker-v2-m3 |
+| `docker-compose.redis.yml.example` | Redis：速率限制 + 工作记忆缓存 + consolidation 游标 |
+| `docker-compose.mem0x-qdrant.yml.example` | Qdrant：向量存储 |
+| `docker-compose.mem0x.yml.example` | mem0x API 服务 |
+| `docker-compose.embedding-nginx.yml.example` | Embedding 集群：nginx 负载均衡 + 4 节点 bge-m3 |
+| `docker-compose.reranker.yml.example` | Reranker 集群：nginx + 2 节点 bge-reranker-v2-m3 |
 
 ### 环境变量
 
@@ -306,7 +311,12 @@ RUN pip install --no-cache-dir /tmp/zh_core_web_sm-3.8.0.tar.gz
 
 ```bash
 # 首次下载模型（需要网络）
-pip download fastembed -d /tmp/fastembed-pkgs
+pip install fastembed
+python -c "from fastembed import TextEmbedding; TextEmbedding('BAAI/bge-m3')"
+python -c "from fastembed.rerank.cross_encoder import TextCrossEncoder; TextCrossEncoder('BAAI/bge-reranker-v2-m3')"
+
+# spaCy 模型（Dockerfile 已预装，本地开发时）
+pip install spacy
 python -m spacy download zh_core_web_sm
 python -m spacy download en_core_web_sm
 
@@ -513,7 +523,7 @@ AOF 持久化已启用，重启不丢数据。
 ## 测试
 
 ```bash
-cd /home/ubuntu/workspace/mem0xAPI
+cd /path/to/mem0x
 
 # 运行全部测试
 python -m pytest tests/ -v
@@ -527,23 +537,9 @@ python -m py_compile mem0x_server.py
 
 测试使用临时 SQLite 文件和 mock Qdrant，不碰真实数据库。
 
-## 版本号规则
+## 更新日志
 
-patch 位到 50 时进位到 minor 位：
-
-```
-0.1.50 → 0.2.0
-0.2.50 → 0.3.0
-```
-
-## 版本历史
-
-| 版本 | 日期 | 主要变更 |
-|------|------|----------|
-| v0.2.0 | 2026-08-28 | Redis 工作记忆缓存层、LLM 摘要压缩、裸 except 修复、测试覆盖 |
-| v0.1.43 | 2026-08-27 | Embedding 本地化、矛盾消解去投票、BM25/FSRS 持久化、P0-P3 审计修复 |
-| v0.1.27 | 2026-08-26 | IndexSync 跨存储同步、consolidation 无 LLM 算法、Redis 游标 |
-| v0.1.17 | 2026-08-24 | 全量 async 迁移、API Key 认证、Redis 速率限制 |
+详见 [GitHub Releases](https://github.com/BcubBo/mem0x/releases)
 
 ## License
 

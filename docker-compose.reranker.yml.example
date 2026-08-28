@@ -1,0 +1,59 @@
+# Reranker 集群：nginx + 2 节点 bge-reranker-v2-m3
+# 每节点 7 workers，共 14 并发
+# 启动: sudo docker compose -f docker-compose.reranker.yml up -d
+#
+# 前置条件：
+#   1. 下载 bge-reranker-v2-m3 模型（首次需要网络，约 1.1GB）：
+#      pip install fastembed
+#      python -c "from fastembed.rerank.cross_encoder import TextCrossEncoder; TextCrossEncoder('BAAI/bge-reranker-v2-m3')"
+#      模型缓存在 ~/.cache/fastembed/，复制到 ./data/models/BAAI/bge-reranker-v2-m3/
+#   2. reranker 和 nginx 镜像需要单独构建（Dockerfile 不在本仓库）
+
+networks:
+  mem0x-net:
+    external: true
+
+services:
+  nginx:
+    image: mem0x-reranker-nginx:latest
+    container_name: mem0x-reranker-nginx
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:28795:8795"
+    depends_on:
+      - n1
+      - n2
+    networks:
+      - mem0x-net
+
+  n1:
+    image: mem0x-reranker:latest
+    container_name: mem0x-reranker-n1
+    restart: unless-stopped
+    mem_limit: 2g
+    ports:
+      - "127.0.0.1:28791:8790"
+    volumes:
+      - ./data/models/BAAI/bge-reranker-v2-m3:/app/models/BAAI/bge-reranker-v2-m3:ro
+    environment:
+      RERANKER_MODEL_PATH: "/app/models/BAAI/bge-reranker-v2-m3"
+      PORT: "8790"
+      WORKERS: "7"
+    networks:
+      - mem0x-net
+
+  n2:
+    image: mem0x-reranker:latest
+    container_name: mem0x-reranker-n2
+    restart: unless-stopped
+    mem_limit: 2g
+    ports:
+      - "127.0.0.1:28792:8790"
+    volumes:
+      - ./data/models/BAAI/bge-reranker-v2-m3:/app/models/BAAI/bge-reranker-v2-m3:ro
+    environment:
+      RERANKER_MODEL_PATH: "/app/models/BAAI/bge-reranker-v2-m3"
+      PORT: "8790"
+      WORKERS: "7"
+    networks:
+      - mem0x-net

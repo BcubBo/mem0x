@@ -133,6 +133,11 @@
     "adaptive": true,
     "retrievability_threshold": 0.2
   },
+  "working_memory": {
+    "enabled": true,
+    "default_ttl_days": 90,
+    "injection_weight": 1.5
+  },
   "redact_names": {},
   "known_persons": ["bo"]
 }

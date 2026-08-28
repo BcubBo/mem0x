@@ -269,6 +269,25 @@ def boost_salience_for_results(results: List[dict]) -> List[dict]:
             except Exception:
                 pass
 
+    # working_memory TTL 刷新：搜索命中时重置 accessed_at
+    try:
+        from wrapper.working_memory import touch as wm_touch
+        wm_cfg = {}
+        try:
+            from security.utils import get_config
+            wm_cfg = get_config().get("working_memory", {})
+        except Exception:
+            pass
+        wm_ttl = wm_cfg.get("default_ttl_days", 90)
+        for mid in ids:
+            if mid:
+                try:
+                    wm_touch(mid, ttl_days=wm_ttl)
+                except Exception:
+                    pass
+    except ImportError:
+        pass
+
     # 持久化 FSRS card 到 Qdrant（批量，单次 HTTP）
     if fsrs_updates:
         try:

@@ -40,14 +40,16 @@ _LANE_TTL = {
 }
 
 
-def _get_auto_expire_config() -> dict:
-    """读取 auto_expire 配置段。"""
+def _load_auto_expire_config() -> dict:
+    """读取 auto_expire 配置段（模块级缓存）。"""
     try:
         from wrapper.mem0_runtime import load_config
         cfg = load_config()
         return cfg.get("auto_expire", {})
     except Exception:
         return {}
+
+_ae_cfg = _load_auto_expire_config()
 
 _EXPIRES_RE = re.compile(r"\[expires:(\d{4}-\d{2}-\d{2})\]")
 _LANE_RE = re.compile(r"\[lane:(\w+)\]")
@@ -77,13 +79,12 @@ def _is_expired(data: str, created_at: Optional[str],
             pass
 
     # 2. adaptive 模式：有 fsrs_card 时用 retrievability 判断
-    cfg = _get_auto_expire_config()
-    adaptive = cfg.get("adaptive", False)
+    adaptive = _ae_cfg.get("adaptive", False)
     if adaptive and metadata and metadata.get("fsrs_card"):
         try:
             from wrapper.fsrs_bridge import compute_retrievability
-            threshold = cfg.get("retrievability_threshold",
-                                DEFAULT_RETRIEVABILITY_THRESHOLD)
+            threshold = _ae_cfg.get("retrievability_threshold",
+                                    DEFAULT_RETRIEVABILITY_THRESHOLD)
             R = compute_retrievability(metadata, created_at)
             if R is not None:
                 return R < threshold

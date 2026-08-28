@@ -41,6 +41,7 @@ from pydantic import BaseModel, Field
 # ── 延迟导入（配置加载后才初始化） ──
 from wrapper.mem0_runtime import get_memory, load_config
 from wrapper.salience import boost_salience_for_results, register as salience_register, delete as salience_delete
+from wrapper import working_memory
 from wrapper import auto_expire
 from wrapper import consolidation
 from wrapper import core_memory
@@ -617,6 +618,12 @@ async def add_memory(req: AddRequest, request: Request):
         except Exception as e:
             logger.warning("salience register 失败: %s", e)
 
+        # 工作记忆：写入高频上下文
+        try:
+            await loop.run_in_executor(None, working_memory.add, memory_id, content, user_id)
+        except Exception as e:
+            logger.warning("working_memory add 失败: %s", e)
+
         # 版本追踪：保存初始版本
         try:
             await loop.run_in_executor(None, version_tracker.save_version, memory_id, content, None, "create")
@@ -744,6 +751,62 @@ async def search_memory(req: SearchRequest, request: Request):
                     r["snippet"] = fts["snippet"]
     except Exception as e:
         logger.debug("FTS5 snippet 失败: %s", e)
+
+    # 工作记忆注入：作为 high-priority 候选（权重可配置）
+    try:
+        wm_cfg = {}
+        try:
+            from security.utils import get_config
+            wm_cfg = get_config().get("working_memory", {})
+        except Exception:
+            pass
+        if wm_cfg.get("enabled", True):
+            wm_items = await loop.run_in_executor(None, working_memory.list_items, user_id)
+            wm_weight = wm_cfg.get("injection_weight", 1.5)
+            wm_ttl = wm_cfg.get("default_ttl_days", 90)
+            existing_contents = {r.get("memory", "").strip() for r in results if r.get("memory")}
+            wm_injected = 0
+            for item in wm_items:
+                wm_content = item.get("content", "").strip()
+                if not wm_content or wm_content in existing_contents:
+                    continue
+                wm_id = item.get("memory_id", f"wm-{item.get('id', '')}")
+                results.append({
+                    "id": wm_id,
+                    "memory": wm_content,
+                    "score": wm_weight,
+                    "metadata": {"source": "working_memory", "original_memory_id": item.get("memory_id", "")},
+                    "hash": "",
+                    "created_at": item.get("created_at"),
+                    "updated_at": item.get("accessed_at"),
+                    "user_id": user_id,
+                    "agent_id": "",
+                    "attributed_to": "",
+                })
+                existing_contents.add(wm_content)
+                # 刷新 TTL
+                try:
+                    await loop.run_in_executor(None, working_memory.touch, item["memory_id"], wm_ttl)
+                except Exception:
+                    pass
+                wm_injected += 1
+            if wm_injected:
+                logger.info("🧠 working_memory: 注入 %d 条候选 (weight=%.1f)", wm_injected, wm_weight)
+    except Exception as e:
+        logger.debug("working_memory 注入失败: %s", e)
+
+    # 内容去重：工作记忆结果与 Qdrant 结果按 content 去重
+    _seen_content = set()
+    _deduped = []
+    for r in results:
+        _key = r.get("memory", "").strip()
+        if not _key:
+            _deduped.append(r)
+            continue
+        if _key not in _seen_content:
+            _seen_content.add(_key)
+            _deduped.append(r)
+    results = _deduped
 
     # 过滤软删除的记忆（metadata.deleted_at 存在则跳过）
     results = [
@@ -940,7 +1003,13 @@ async def delete_memory_confirm(req: DeleteRequest, request: Request):
         await loop.run_in_executor(None, salience_delete, req.memory_id)
     except Exception as e:
         logger.warning("salience delete 失败: %s", e)
-    
+
+    # 3.5. working_memory 清理（联动）
+    try:
+        await loop.run_in_executor(None, working_memory.delete_by_memory_id, req.memory_id)
+    except Exception as e:
+        logger.warning("working_memory delete 失败: %s", e)
+
     # 5. FTS5 清理（异步化）
     try:
         from wrapper.fts5_store import get_fts5
@@ -1429,6 +1498,34 @@ async def reconcile_stats():
     import asyncio
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, reconcile.get_stats)
+
+
+# ── Working Memory 端点 ──
+
+class WorkingMemoryListRequest(BaseModel):
+    user_id: str = Field(..., description="用户 ID")
+
+
+class WorkingMemoryClearRequest(BaseModel):
+    user_id: Optional[str] = Field(default=None, description="用户 ID（为空则清空全部）")
+
+
+@app.post("/working-memory/list", dependencies=[Depends(verify_api_key), Depends(rate_limit)])
+async def list_working_memory(req: WorkingMemoryListRequest, request: Request):
+    """获取用户的工作记忆列表。"""
+    user_id = request.headers.get("X-User-ID") or req.user_id
+    loop = asyncio.get_running_loop()
+    items = await loop.run_in_executor(None, working_memory.list_items, user_id)
+    return {"items": items, "count": len(items), "user_id": user_id}
+
+
+@app.post("/working-memory/clear", dependencies=[Depends(verify_api_key), Depends(rate_limit)])
+async def clear_working_memory(req: WorkingMemoryClearRequest, request: Request):
+    """清空工作记忆。user_id 为空则清空全部。"""
+    user_id = request.headers.get("X-User-ID") or req.user_id
+    loop = asyncio.get_running_loop()
+    deleted = await loop.run_in_executor(None, working_memory.clear, user_id)
+    return {"status": "ok", "deleted": deleted}
 
 
 # ═══════════════════════════════════════════════════

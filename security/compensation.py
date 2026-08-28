@@ -12,6 +12,8 @@ import time
 from collections import deque
 from typing import Optional, Callable, Any
 
+from security.db_common import get_db, get_db_path
+
 logger = logging.getLogger("mem0x.compensation")
 
 # 补偿队列：{action, content, filters, metadata, retries, next_retry_at}
@@ -25,14 +27,13 @@ MAX_RETRIES = 5
 BASE_DELAY = 2  # 秒
 MAX_DELAY = 60  # 秒
 
-# SQLite 持久化
-_DB_PATH = os.path.join(os.environ.get("MEM0X_DATA_DIR", "data"), "compensation.db")
+# SQLite 持久化路径（仅供 os.path.exists 检查）
+_DB_PATH = get_db_path("compensation")
 
 
 def _init_db():
     """初始化补偿队列表。"""
-    conn = sqlite3.connect(_DB_PATH, timeout=10)
-    conn.execute("PRAGMA journal_mode=WAL")
+    conn = get_db("compensation")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS compensation_queue (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,7 +58,7 @@ def _init_db():
 def _persist_task(task: dict):
     """持久化单个任务到 SQLite，记录行 ID 用于精确删除。"""
     try:
-        conn = sqlite3.connect(_DB_PATH, timeout=10)
+        conn = get_db("compensation")
         cursor = conn.execute(
             "INSERT INTO compensation_queue (action, content, filters, metadata, retries, next_retry_at, created_at) VALUES (?,?,?,?,?,?,?)",
             (task.get("action", "add"), task["content"], json.dumps(task["filters"]), json.dumps(task.get("metadata")),
@@ -75,7 +76,7 @@ def _load_persisted():
     if not os.path.exists(_DB_PATH):
         return
     try:
-        conn = sqlite3.connect(_DB_PATH, timeout=10)
+        conn = get_db("compensation")
         rows = conn.execute("SELECT action, content, filters, metadata, retries, next_retry_at, created_at FROM compensation_queue").fetchall()
         conn.close()
         for action, content, filters_json, meta_json, retries, next_retry_at, created_at in rows:
@@ -98,7 +99,7 @@ def _load_persisted():
 def _clear_persisted(task_content: str = None, row_id: int = None):
     """清除 SQLite 中的已完成任务。优先用 row_id 精确删除，否则清全部。"""
     try:
-        conn = sqlite3.connect(_DB_PATH, timeout=10)
+        conn = get_db("compensation")
         if row_id:
             conn.execute("DELETE FROM compensation_queue WHERE id = ?", (row_id,))
         elif task_content:
@@ -232,11 +233,13 @@ def dead_stats(limit: int = 50) -> dict:
     if not os.path.exists(_DB_PATH):
         return result
     try:
-        conn = sqlite3.connect(_DB_PATH, timeout=10)
+        conn = get_db("compensation")
         row_count = conn.execute(
             "SELECT COUNT(*) FROM compensation_queue WHERE retries >= ?", (MAX_RETRIES,)
         ).fetchone()[0]
         result["total"] = row_count
+        if row_count > 0:
+            logger.warning("dead letter queue: %d tasks exceeded max retries", row_count)
         rows = conn.execute(
             "SELECT id, action, content, filters, metadata, retries, next_retry_at, created_at "
             "FROM compensation_queue WHERE retries >= ? ORDER BY created_at DESC LIMIT ?",

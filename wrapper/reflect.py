@@ -176,6 +176,23 @@ async def run_reflect_cycle(memory, user_id: str = "bo", agent_id: str = "hermes
         health = await analyze_system_health(memory, user_id, agent_id)
         result["health"] = health
 
+        # 质量极差时自动触发 evolve_mem 清理
+        evolve_result = None
+        if health["quality_score"] < 0.3:
+            try:
+                from wrapper.evolve_mem import run_evolve_cycle
+                logger.info("reflect: 质量 %.2f < 0.3，自动触发 evolve_mem 清理",
+                            health["quality_score"])
+                evolve_result = await run_evolve_cycle(memory, user_id, agent_id)
+                logger.info("reflect: evolve_mem 清理完成，剪枝 %d 条",
+                            evolve_result.get("pruned", 0))
+                health["suggestions"].append(
+                    f"已自动触发 evolve_mem: 剪枝 {evolve_result.get('pruned', 0)} 条"
+                )
+            except Exception as e:
+                logger.warning("reflect: 自动触发 evolve_mem 失败: %s", e)
+                health["suggestions"].append(f"自动触发 evolve_mem 失败: {e}")
+
         # 记录到 SQLite
         _ensure_db()
         try:

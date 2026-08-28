@@ -836,6 +836,7 @@ async def run_consolidation_cycle(
                 if old_id and old_id != new_id:
                     try:
                         await memory.update(old_id, metadata={"archived": True, "merged_into": new_id})
+                        _record_archive(old_id, new_id)
                     except Exception as e:
                         logger.debug("归档失败 %s: %s", old_id[:8], e)
 

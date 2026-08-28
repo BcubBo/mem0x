@@ -10,3 +10,17 @@ config.json
 !config.json.example
 *.tar.gz
 *.bak
+*.whl
+
+# MiMo Code sessions
+.mimocode/
+
+# Local scripts (not part of package)
+scripts/
+
+# Internal docs
+docs/
+
+# Test artifacts
+.pytest_cache/
+test_unified_api.sh

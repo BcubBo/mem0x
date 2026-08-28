@@ -315,6 +315,9 @@ RUN pip install --no-cache-dir /tmp/zh_core_web_sm-3.8.0.tar.gz
 ```bash
 pip install fastembed
 
+# 国内用户设置 HuggingFace 镜像（解决下载慢/超时问题）
+export HF_ENDPOINT=https://hf-mirror.com
+
 # 下载 bge-m3（首次运行会自动下载到 ~/.cache/fastembed/）
 python -c "from fastembed import TextEmbedding; TextEmbedding('BAAI/bge-m3')"
 
@@ -329,6 +332,11 @@ mkdir -p ./data/models/BAAI/bge-reranker-v2-m3
 cp -r ~/.cache/fastembed/bge-reranker-v2-m3 ./data/models/BAAI/
 ```
 
+> **国内镜像说明**：`hf-mirror.com` 是 HuggingFace 的国内镜像，速度可达满带宽。设置 `HF_ENDPOINT` 环境变量后，fastembed/transformers 等库会自动走镜像。也可以在 `~/.bashrc` 中永久生效：
+> ```bash
+> echo 'export HF_ENDPOINT=https://hf-mirror.com' >> ~/.bashrc
+> ```
+
 #### spaCy 模型（英文 + 中文 NER）
 
 ```bash
@@ -341,6 +349,11 @@ python -m spacy download zh_core_web_sm
 # 方式 2：离线安装（从 .tar.gz 文件，Dockerfile 已预装）
 pip install en_core_web_sm-3.8.0.tar.gz
 pip install zh_core_web_sm-3.8.0.tar.gz
+
+# 方式 3：国内镜像下载 spaCy 模型
+# 从 GitHub Release 或镜像站下载 .tar.gz，然后 pip install
+pip install https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+pip install https://github.com/explosion/spacy-models/releases/download/zh_core_web_sm-3.8.0/zh_core_web_sm-3.8.0-py3-none-any.whl
 ```
 
 #### 离线构建
@@ -350,6 +363,8 @@ pip install zh_core_web_sm-3.8.0.tar.gz
 ```bash
 sudo docker build --network=none -t mem0xapi:v0.2.0 .
 ```
+
+> **国内构建说明**：Dockerfile 已内置清华 pip 镜像（`pypi.tuna.tsinghua.edu.cn`）和 Debian 镜像，构建时自动走国内源，无需额外配置。
 
 ## Hermes Agent 插件
 

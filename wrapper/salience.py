@@ -62,6 +62,40 @@ def _get_config() -> dict:
         return {}
 
 
+def _compute_fsrs_retrievability(memory_id: str) -> Optional[float]:
+    """尝试从 Qdrant 获取 metadata，计算 FSRS retrievability。
+    无 fsrs_card 时返回 None。"""
+    try:
+        from wrapper.mem0_runtime import get_memory
+        from wrapper.fsrs_bridge import compute_retrievability
+        import asyncio as _asyncio
+
+        mem = get_memory()
+        if not mem:
+            return None
+
+        async def _fetch():
+            got = await mem.get(memory_id)
+            if not got:
+                return None
+            metadata = got.get("metadata") or {}
+            if not metadata.get("fsrs_card"):
+                return None
+            created_at = got.get("created_at") or metadata.get("created_at")
+            return compute_retrievability(metadata, created_at)
+
+        try:
+            return _asyncio.run(_fetch())
+        except RuntimeError:
+            loop = _asyncio.new_event_loop()
+            try:
+                return loop.run_until_complete(_fetch())
+            finally:
+                loop.close()
+    except Exception:
+        return None
+
+
 def register(
     memory_id: str,
     content_preview: str = "",
@@ -88,36 +122,38 @@ def register(
 
 
 def on_memory_accessed(memory_id: str) -> float:
-    """记忆被搜索命中时 boost 显著性。返回新 salience 值。"""
+    """记忆被搜索命中时，用 FSRS 计算 retrievability 并缓存。无 fsrs_card 时 fallback 到简单 boost。"""
     _ensure_schema()
     cfg = _get_config()
     boost = cfg.get("access_boost", DEFAULT_ACCESS_BOOST)
-    decay_rate = cfg.get("decay_rate", DEFAULT_DECAY_RATE)
+    now = time.time()
+
+    # 尝试 FSRS retrievability
+    fsrs_val = _compute_fsrs_retrievability(memory_id)
 
     conn = _get_db()
     try:
         row = conn.execute(
-            "SELECT salience, last_access, access_count FROM salience WHERE memory_id=?",
+            "SELECT salience, access_count FROM salience WHERE memory_id=?",
             (memory_id,),
         ).fetchone()
 
         if row:
-            old_s = row["salience"]
-            old_ts = row["last_access"]
             cnt = row["access_count"]
-            # 先衰减到当前时刻
-            days_elapsed = (time.time() - old_ts) / 86400
-            decayed = old_s * math.exp(-decay_rate * days_elapsed)
-            # 再 boost
-            new_s = min(1.0, decayed + boost)
+            if fsrs_val is not None:
+                new_s = fsrs_val
+            else:
+                # fallback: 简单 boost
+                new_s = min(1.0, row["salience"] + boost)
             conn.execute(
                 "UPDATE salience SET salience=?, last_access=?, access_count=? WHERE memory_id=?",
-                (new_s, time.time(), cnt + 1, memory_id),
+                (new_s, now, cnt + 1, memory_id),
             )
         else:
-            # 没有记录，注册一个
-            new_s = cfg.get("initial_value", DEFAULT_INITIAL)
-            now = time.time()
+            if fsrs_val is not None:
+                new_s = fsrs_val
+            else:
+                new_s = cfg.get("initial_value", DEFAULT_INITIAL)
             conn.execute(
                 "INSERT INTO salience (memory_id, salience, last_access, access_count, created_at) VALUES (?,?,?,?,?)",
                 (memory_id, new_s, now, 1, now),
@@ -132,50 +168,44 @@ def on_memory_accessed(memory_id: str) -> float:
 
 
 def get_salience(memory_id: str) -> float:
-    """获取单条记忆的当前 salience（含衰减）。"""
+    """获取单条记忆的当前 salience（已是 FSRS 计算后的缓存值）。"""
     _ensure_schema()
     cfg = _get_config()
-    decay_rate = cfg.get("decay_rate", DEFAULT_DECAY_RATE)
 
     conn = _get_db()
     try:
         row = conn.execute(
-            "SELECT salience, last_access FROM salience WHERE memory_id=?",
+            "SELECT salience FROM salience WHERE memory_id=?",
             (memory_id,),
         ).fetchone()
         if not row:
             return cfg.get("initial_value", DEFAULT_INITIAL)
-        days_elapsed = (time.time() - row["last_access"]) / 86400
-        return row["salience"] * math.exp(-decay_rate * days_elapsed)
+        return row["salience"]
     finally:
         conn.close()
 
 
 def get_batch_salience(memory_ids: List[str]) -> Dict[str, float]:
-    """批量获取 salience（消除 N+1 查询）。"""
+    """批量获取 salience（已是 FSRS 计算后的缓存值）。"""
     if not memory_ids:
         return {}
 
     _ensure_schema()
     cfg = _get_config()
-    decay_rate = cfg.get("decay_rate", DEFAULT_DECAY_RATE)
     initial = cfg.get("initial_value", DEFAULT_INITIAL)
 
     conn = _get_db()
     try:
         placeholders = ",".join("?" * len(memory_ids))
         rows = conn.execute(
-            f"SELECT memory_id, salience, last_access FROM salience WHERE memory_id IN ({placeholders})",
+            f"SELECT memory_id, salience FROM salience WHERE memory_id IN ({placeholders})",
             memory_ids,
         ).fetchall()
 
         result = {}
-        now = time.time()
         for r in rows:
-            days_elapsed = (now - r["last_access"]) / 86400
-            result[r["memory_id"]] = r["salience"] * math.exp(-decay_rate * days_elapsed)
+            result[r["memory_id"]] = r["salience"]
 
-        # 未找到的用默认值
         for mid in memory_ids:
             if mid not in result:
                 result[mid] = initial
@@ -271,12 +301,17 @@ def boost_salience_for_results(results: List[dict]) -> List[dict]:
 
 
 def batch_on_memory_accessed(memory_ids: list) -> None:
-    """批量 boost 显著性（单连接，减少 N+1）。"""
+    """批量更新 salience：优先 FSRS retrievability，无 fsrs_card 时 fallback 简单 boost。"""
     _ensure_schema()
     cfg = _get_config()
     boost = cfg.get("access_boost", DEFAULT_ACCESS_BOOST)
-    decay_rate = cfg.get("decay_rate", DEFAULT_DECAY_RATE)
     now = time.time()
+
+    # 批量预取 FSRS retrievability
+    fsrs_map: Dict[str, Optional[float]] = {}
+    for mid in memory_ids:
+        if mid:
+            fsrs_map[mid] = _compute_fsrs_retrievability(mid)
 
     conn = _get_db()
     try:
@@ -284,23 +319,26 @@ def batch_on_memory_accessed(memory_ids: list) -> None:
             if not memory_id:
                 continue
             try:
+                fsrs_val = fsrs_map.get(memory_id)
                 row = conn.execute(
-                    "SELECT salience, last_access, access_count FROM salience WHERE memory_id=?",
+                    "SELECT salience, access_count FROM salience WHERE memory_id=?",
                     (memory_id,),
                 ).fetchone()
                 if row:
-                    old_s = row["salience"]
-                    old_ts = row["last_access"]
                     cnt = row["access_count"]
-                    days_elapsed = (now - old_ts) / 86400
-                    decayed = old_s * math.exp(-decay_rate * days_elapsed)
-                    new_s = min(1.0, decayed + boost)
+                    if fsrs_val is not None:
+                        new_s = fsrs_val
+                    else:
+                        new_s = min(1.0, row["salience"] + boost)
                     conn.execute(
                         "UPDATE salience SET salience=?, last_access=?, access_count=? WHERE memory_id=?",
                         (new_s, now, cnt + 1, memory_id),
                     )
                 else:
-                    new_s = cfg.get("initial_value", DEFAULT_INITIAL)
+                    if fsrs_val is not None:
+                        new_s = fsrs_val
+                    else:
+                        new_s = cfg.get("initial_value", DEFAULT_INITIAL)
                     conn.execute(
                         "INSERT INTO salience (memory_id, salience, last_access, access_count, created_at) VALUES (?,?,?,?,?)",
                         (memory_id, new_s, now, 1, now),

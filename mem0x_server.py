@@ -47,6 +47,7 @@ from wrapper import core_memory
 from wrapper import evolve_mem
 from wrapper import reflect
 from wrapper import hot_archive
+from wrapper import reconcile
 from wrapper import version_tracker
 from security.pipeline import safe_add
 from security.scoring import score_and_rank
@@ -174,11 +175,19 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("hot_archive 启动失败: %s", e)
 
+    # 启动 reconcile 对账后台线程
+    try:
+        reconcile.start_reconcile_thread()
+        logger.info("reconcile 已启动")
+    except Exception as e:
+        logger.warning("reconcile 启动失败: %s", e)
+
     # 启动补偿队列 worker
     try:
         from security.compensation import start as comp_start
         from security.pipeline import safe_add as _safe_add_fn
-        comp_start(_safe_add_fn)
+        from wrapper.index_sync import compensate_delete as _comp_delete_fn
+        comp_start(handlers={"add": _safe_add_fn, "delete": _comp_delete_fn})
         logger.info("补偿队列已启动")
     except Exception as e:
         logger.warning("补偿队列启动失败: %s", e)
@@ -193,6 +202,7 @@ async def lifespan(app: FastAPI):
     evolve_mem.stop()
     reflect.stop()
     hot_archive.stop()
+    reconcile.stop()
     logger.info("mem0x 已关闭")
 
 
@@ -468,6 +478,8 @@ _RATE_LIMITS = {
     "/consolidate": (5, 60),
     "/evolve": (5, 60),
     "/reflect": (5, 60),
+    "/reconcile": (3, 60),        # 对账：低频
+    "/reconcile/stats": (30, 60), # 统计查询：轻量
 }
 _DEFAULT_LIMIT = (120, 60)  # 其他端点
 
@@ -1380,6 +1392,31 @@ async def archive_status():
     return {
         "running": hot_archive.is_running(),
     }
+
+
+# ── Reconcile 端点 ──
+
+@app.post("/reconcile", dependencies=[Depends(verify_api_key), Depends(rate_limit)])
+async def run_reconcile():
+    """手动触发三库对账检查。
+
+    比对 Qdrant / FTS5 / salience 三端 memory_id 一致性。
+    策略：宁可漏删不要误删。
+    """
+    import asyncio
+    loop = asyncio.get_running_loop()
+    start = time.time()
+    result = await loop.run_in_executor(None, reconcile.reconcile_all)
+    result["elapsed_ms"] = int((time.time() - start) * 1000)
+    return result
+
+
+@app.get("/reconcile/stats", dependencies=[Depends(verify_api_key), Depends(rate_limit)])
+async def reconcile_stats():
+    """查询三库统计信息 + 最近一次对账结果。"""
+    import asyncio
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, reconcile.get_stats)
 
 
 # ═══════════════════════════════════════════════════

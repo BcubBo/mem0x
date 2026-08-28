@@ -87,11 +87,11 @@ def redact_pii(text: str) -> str:
     return result
 
 
-def _enqueue_compensation(content: str, filters: dict, metadata: dict = None):
+def _enqueue_compensation(content: str, filters: dict, metadata: dict = None, action: str = "add"):
     """写入失败时入补偿队列。"""
     try:
         from security.compensation import enqueue
-        enqueue(content, filters, metadata)
+        enqueue(content, filters, metadata, action=action)
     except Exception as e:
         logger.warning("compensation enqueue failed: %s", e)
 

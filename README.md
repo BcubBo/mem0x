@@ -104,15 +104,7 @@ mem0x/
 │   ├── test_reconcile.py        # 三库对账测试
 │   └── test_compensation.py     # 补偿队列测试
 │
-├── scripts/                     # 运维脚本（不入库）
-│   ├── backfill_fts5.py         # FTS5 回填
-│   └── backfill_tags.py         # 标签回填
-│
-└── docs/                        # 内部文档（不入库）
-    ├── FINAL_PLAN.md
-    ├── REFACTOR_PLAN.md
-    ├── UNIFIED_API_DESIGN.md
-    └── WRITE_RELIABILITY_PLAN.md
+
 ```
 
 ## 部署

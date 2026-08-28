@@ -97,7 +97,10 @@ def sync_after_merge(new_id: str, old_ids: list, merged_text: str,
     """合并记忆后同步更新 FTS5/salience。
 
     调用方：consolidation
+    任一子系统失败则入补偿队列（action="merge"）。
     """
+    failures = []
+
     # FTS5：删除旧索引 + 写入新索引
     fts5 = _get_fts5()
     if fts5:
@@ -108,6 +111,7 @@ def sync_after_merge(new_id: str, old_ids: list, merged_text: str,
             logger.debug("IndexSync: FTS5 合并 %d→1", len(old_ids))
         except Exception as e:
             logger.warning("IndexSync: FTS5 合并失败: %s", e)
+            failures.append(("fts5", str(e)))
 
     # salience：注册新记忆
     sal = _get_salience()
@@ -122,8 +126,23 @@ def sync_after_merge(new_id: str, old_ids: list, merged_text: str,
             logger.debug("IndexSync: salience 合并 %d→1", len(old_ids))
         except Exception as e:
             logger.warning("IndexSync: salience 合并失败: %s", e)
+            failures.append(("salience", str(e)))
 
     # version_tracker：已由 memory.update() 归档处理，无需额外操作
+
+    # 入补偿队列
+    if failures:
+        try:
+            from security.compensation import enqueue
+            enqueue(
+                content=new_id,
+                filters={"user_id": user_id, "old_ids": old_ids, "merged_text": merged_text},
+                metadata={"failures": failures, "merged_metadata": merged_metadata},
+                action="merge",
+            )
+            logger.info("IndexSync: merge %s 补偿入队 (%d个子系统失败)", new_id[:8], len(failures))
+        except Exception as e:
+            logger.warning("IndexSync: merge 补偿入队失败: %s", e)
 
 
 async def compensate_delete(memory_id: str, filters: dict, metadata: dict = None) -> dict:
@@ -140,3 +159,22 @@ async def compensate_delete(memory_id: str, filters: dict, metadata: dict = None
     except Exception as e:
         logger.warning("compensate_delete 失败 %s: %s", memory_id[:8], e)
         return {"action": "error", "memory_id": memory_id, "error": str(e)}
+
+
+async def compensate_merge(new_id: str, filters: dict, metadata: dict = None) -> dict:
+    """补偿队列 merge handler：重新执行 sync_after_merge。
+
+    供 compensation worker 调用，签名与 safe_add 一致。
+    content=new_id, filters={"user_id", "old_ids", "merged_text"}, metadata={"failures", ...}
+    """
+    user_id = (filters or {}).get("user_id", "bo")
+    old_ids = (filters or {}).get("old_ids", [])
+    merged_text = (filters or {}).get("merged_text", "")
+    merged_metadata = (metadata or {}).get("merged_metadata")
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(None, sync_after_merge, new_id, old_ids, merged_text, user_id, merged_metadata)
+        return {"action": "ok", "memory_id": new_id}
+    except Exception as e:
+        logger.warning("compensate_merge 失败 %s: %s", new_id[:8], e)
+        return {"action": "error", "memory_id": new_id, "error": str(e)}

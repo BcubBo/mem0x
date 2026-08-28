@@ -187,7 +187,8 @@ async def lifespan(app: FastAPI):
         from security.compensation import start as comp_start
         from security.pipeline import safe_add as _safe_add_fn
         from wrapper.index_sync import compensate_delete as _comp_delete_fn
-        comp_start(handlers={"add": _safe_add_fn, "delete": _comp_delete_fn})
+        from wrapper.index_sync import compensate_merge as _comp_merge_fn
+        comp_start(handlers={"add": _safe_add_fn, "delete": _comp_delete_fn, "merge": _comp_merge_fn})
         logger.info("补偿队列已启动")
     except Exception as e:
         logger.warning("补偿队列启动失败: %s", e)
@@ -666,8 +667,14 @@ async def search_memory(req: SearchRequest, request: Request):
 
     try:
         # dense embedding
+        _emb_t0 = time.time()
         dense_vec = await loop.run_in_executor(
             None, memory.embedding_model.embed, req.query)
+        _emb_ms = int((time.time() - _emb_t0) * 1000)
+        logger.info("📊 embedding: items=1 dim=%d model=%s ms=%d",
+                     len(dense_vec) if dense_vec else 0,
+                     getattr(memory.embedding_model, 'model', 'unknown'),
+                     _emb_ms)
 
         # sparse BM25
         sparse_enc = get_bm25_encoder()
@@ -724,8 +731,11 @@ async def search_memory(req: SearchRequest, request: Request):
     # FTS5 补充 snippet（高亮）
     try:
         fts5 = get_fts5()
+        _fts5_t0 = time.time()
         fts5_results = await loop.run_in_executor(
             None, fts5.search, req.query, user_id, search_limit, True)
+        _fts5_ms = int((time.time() - _fts5_t0) * 1000)
+        logger.info("📊 fts5_snippet: results=%d ms=%d", len(fts5_results), _fts5_ms)
         snippet_map = {r["memory_id"]: r for r in fts5_results}
         for r in results:
             fts = snippet_map.get(r["id"])
@@ -788,10 +798,13 @@ async def search_memory(req: SearchRequest, request: Request):
             config = load_config()
             docs = [r.get("memory", "") for r in results]
             loop = asyncio.get_running_loop()
+            _rr_t0 = time.time()
+            _scores_before = [(r.get("id"), r.get("score", 0)) for r in results[:5]]
             rerank_results = await loop.run_in_executor(
                 None,
                 lambda: do_rerank(req.query, docs, top_n=req.limit, config=config),
             )
+            _rr_ms = int((time.time() - _rr_t0) * 1000)
             if rerank_results:
                 # 融合 rerank 分数
                 rerank_weight = config.get("scoring", {}).get("rerank_weight", 0.4)
@@ -808,6 +821,12 @@ async def search_memory(req: SearchRequest, request: Request):
                             + heat * salience_weight
                         )
                         results[idx]["rerank_score"] = rerank_s
+            _scores_after = [(r.get("id"), r.get("score", 0)) for r in results[:5]]
+            logger.info("📊 rerank: docs=%d returned=%d ms=%d model=%s scores_before=%s scores_after=%s",
+                         len(docs), len(rerank_results or []), _rr_ms,
+                         config.get("reranker", {}).get("model", "unknown"),
+                         [(s[0], round(s[1], 4)) for s in _scores_before],
+                         [(s[0], round(s[1], 4)) for s in _scores_after])
             results.sort(key=lambda x: x.get("score", 0), reverse=True)
             results = results[:req.limit]
         except Exception as e:

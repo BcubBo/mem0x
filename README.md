@@ -299,20 +299,55 @@ COPY zh_core_web_sm-3.8.0.tar.gz /tmp/
 RUN pip install --no-cache-dir /tmp/zh_core_web_sm-3.8.0.tar.gz
 ```
 
-**离线构建**：将 `.tar.gz` 模型文件放在仓库根目录（已在 `.gitignore` 中排除），构建镜像时不会触发网络下载。
+### 模型下载
+
+首次部署需要下载以下模型（后续构建镜像时复用缓存，无需重复下载）：
+
+| 模型 | 大小 | 用途 | 下载方式 |
+|------|------|------|----------|
+| `BAAI/bge-m3` | ~2GB | Embedding 向量化 | fastembed |
+| `BAAI/bge-reranker-v2-m3` | ~1.1GB | Reranker 重排序 | fastembed |
+| `en_core_web_sm-3.8.0` | ~12MB | spaCy 英文 NER | spaCy |
+| `zh_core_web_sm-3.8.0` | ~47MB | spaCy 中文 NER | spaCy |
+
+#### fastembed 模型（bge-m3 + bge-reranker-v2-m3）
 
 ```bash
-# 首次下载模型（需要网络）
 pip install fastembed
+
+# 下载 bge-m3（首次运行会自动下载到 ~/.cache/fastembed/）
 python -c "from fastembed import TextEmbedding; TextEmbedding('BAAI/bge-m3')"
+
+# 下载 bge-reranker-v2-m3
 python -c "from fastembed.rerank.cross_encoder import TextCrossEncoder; TextCrossEncoder('BAAI/bge-reranker-v2-m3')"
 
-# spaCy 模型（Dockerfile 已预装，本地开发时）
-pip install spacy
-python -m spacy download zh_core_web_sm
-python -m spacy download en_core_web_sm
+# 复制到数据目录（供 Docker 容器挂载）
+mkdir -p ./data/fastembed/bge-m3
+cp -r ~/.cache/fastembed/bge-m3 ./data/fastembed/
 
-# 离线构建镜像
+mkdir -p ./data/models/BAAI/bge-reranker-v2-m3
+cp -r ~/.cache/fastembed/bge-reranker-v2-m3 ./data/models/BAAI/
+```
+
+#### spaCy 模型（英文 + 中文 NER）
+
+```bash
+pip install spacy spacy-pkuseg
+
+# 方式 1：在线下载（需要网络）
+python -m spacy download en_core_web_sm
+python -m spacy download zh_core_web_sm
+
+# 方式 2：离线安装（从 .tar.gz 文件，Dockerfile 已预装）
+pip install en_core_web_sm-3.8.0.tar.gz
+pip install zh_core_web_sm-3.8.0.tar.gz
+```
+
+#### 离线构建
+
+模型下载完成后，构建镜像时不会触发网络下载：
+
+```bash
 sudo docker build --network=none -t mem0xapi:v0.2.0 .
 ```
 

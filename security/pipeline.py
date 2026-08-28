@@ -182,6 +182,14 @@ async def safe_add(
             results = result.get("results", []) if isinstance(result, dict) else []
             memory_id = results[0].get("id") if results else None
             logger.info("✅ pipeline.added_after_conflict: memory_id=%s", memory_id)
+            # FTS5 双写：新增记忆同步到 FTS5
+            if memory_id:
+                try:
+                    from wrapper.fts5_store import get_fts5
+                    get_fts5().write(memory_id, content, user_id)
+                except Exception as e:
+                    logger.warning("FTS5 conflict add sync 失败，入补偿队列: %s", e)
+                    _enqueue_compensation(content, filters, metadata)
         except Exception as e:
             logger.warning("safe_add conflict后写入异常: %s", e)
             _enqueue_compensation(content, filters, metadata)
@@ -227,6 +235,14 @@ async def safe_add(
         results = result.get("results", []) if isinstance(result, dict) else []
         memory_id = results[0].get("id") if results else None
         logger.info("✅ pipeline.added: memory_id=%s", memory_id)
+        # FTS5 双写：新增记忆同步到 FTS5
+        if memory_id:
+            try:
+                from wrapper.fts5_store import get_fts5
+                get_fts5().write(memory_id, content, user_id)
+            except Exception as e:
+                logger.warning("FTS5 add sync 失败，入补偿队列: %s", e)
+                _enqueue_compensation(content, filters, metadata)
         return {"action": "added", "memory_id": memory_id}
     except Exception as e:
         logger.warning("safe_add 异常: %s", e)

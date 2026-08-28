@@ -28,17 +28,17 @@ def _load_config():
     try:
         from wrapper.mem0_runtime import load_config
         config = load_config()
-        return config.get("consolidation", {}).get("cursor", {})
+        return config.get("consolidation", {})
     except Exception:
         return {}
 
 _cfg = _load_config()
 
 # 向量相似度阈值（余弦相似度，高于此值视为可合并）
-VECTOR_SIM_THRESHOLD = _cfg.get("vector_sim_threshold", 0.82)
+VECTOR_SIM_THRESHOLD = _cfg.get("vector_sim_threshold", 0.75)
 
 # Jaccard 文本相似度阈值（双重验证）
-JACCARD_THRESHOLD = _cfg.get("jaccard_threshold", 0.45)
+JACCARD_THRESHOLD = _cfg.get("jaccard_threshold", 0.35)
 
 # 最小/最大合并组大小
 MIN_GROUP_SIZE = 2

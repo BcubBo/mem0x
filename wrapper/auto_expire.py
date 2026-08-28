@@ -27,6 +27,9 @@ BATCH_SIZE = 200
 # 最大扫描轮数（安全阀，防止无限循环）
 MAX_SCROLL_ROUNDS = 200
 
+# 自适应衰减：retrievability 低于此阈值视为过期
+DEFAULT_RETRIEVABILITY_THRESHOLD = 0.2
+
 # lane → TTL 天数（None = 永不衰减）
 _LANE_TTL = {
     "identity": None,
@@ -36,6 +39,16 @@ _LANE_TTL = {
     "default": 30,
 }
 
+
+def _get_auto_expire_config() -> dict:
+    """读取 auto_expire 配置段。"""
+    try:
+        from wrapper.mem0_runtime import load_config
+        cfg = load_config()
+        return cfg.get("auto_expire", {})
+    except Exception:
+        return {}
+
 _EXPIRES_RE = re.compile(r"\[expires:(\d{4}-\d{2}-\d{2})\]")
 _LANE_RE = re.compile(r"\[lane:(\w+)\]")
 
@@ -44,9 +57,15 @@ _running = False
 _thread: Optional[threading.Thread] = None
 
 
-def _is_expired(data: str, created_at: Optional[str]) -> bool:
-    """判断单条记忆是否过期。纯字符串解析，零 API 调用。"""
-    # 1. 显式 expires 标记
+def _is_expired(data: str, created_at: Optional[str],
+                 metadata: Optional[dict] = None) -> bool:
+    """判断单条记忆是否过期。
+
+    - 显式 [expires:YYYY-MM-DD] 标记：始终生效。
+    - adaptive 模式且有 fsrs_card：用 retrievability < 阈值 判断（替代固定 TTL）。
+    - 其他情况：保留原有 lane TTL 作为 fallback。
+    """
+    # 1. 显式 expires 标记（始终生效，不受 adaptive 影响）
     m = _EXPIRES_RE.search(data)
     if m:
         try:
@@ -57,7 +76,22 @@ def _is_expired(data: str, created_at: Optional[str]) -> bool:
         except ValueError:
             pass
 
-    # 2. lane TTL
+    # 2. adaptive 模式：有 fsrs_card 时用 retrievability 判断
+    cfg = _get_auto_expire_config()
+    adaptive = cfg.get("adaptive", False)
+    if adaptive and metadata and metadata.get("fsrs_card"):
+        try:
+            from wrapper.fsrs_bridge import compute_retrievability
+            threshold = cfg.get("retrievability_threshold",
+                                DEFAULT_RETRIEVABILITY_THRESHOLD)
+            R = compute_retrievability(metadata, created_at)
+            if R is not None:
+                return R < threshold
+        except Exception as e:
+            logger.debug("adaptive retrievability 计算失败，回退 TTL: %s", e)
+            # fall through to lane TTL
+
+    # 3. lane TTL（fallback / 非 adaptive 模式）
     lm = _LANE_RE.search(data)
     if lm and created_at:
         ttl_days = _LANE_TTL.get(lm.group(1))
@@ -131,8 +165,9 @@ def run_expire_cycle(user_id: str = "bo") -> int:
                 scanned += 1
                 data = point.payload.get("data", "")
                 created_at = point.payload.get("created_at")
+                metadata = point.payload.get("metadata")
 
-                if not data or not _is_expired(data, created_at):
+                if not data or not _is_expired(data, created_at, metadata):
                     continue
 
                 # 跳过核心记忆

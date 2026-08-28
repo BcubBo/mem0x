@@ -129,6 +129,10 @@
     "search_limit": 20,
     "hot_words_min_length": 2
   },
+  "auto_expire": {
+    "adaptive": true,
+    "retrievability_threshold": 0.2
+  },
   "redact_names": {},
   "known_persons": ["bo"]
 }

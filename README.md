@@ -1,225 +1,441 @@
-# mem0x v0.2.0
+# mem0x
 
-基于 [mem0](https://github.com/mem0ai/mem0) 的 AI 记忆增强服务，为 AI Agent 提供持久化、可检索、可进化的记忆能力。
+AI Agent 记忆增强服务。基于 [mem0](https://github.com/mem0ai/mem0) 构建，提供持久化、可检索、可进化的记忆能力。
 
-本项目的设计思路和架构灵感来源于 [aiduMEI](https://github.com/monkey2jack/aiduMEI)，感谢其在 AI 记忆系统领域的探索和实践。
+设计灵感来源于 [aiduMEI](https://github.com/monkey2jack/aiduMEI)，感谢其在 AI 记忆系统领域的探索和实践。
 
-## 架构总览
+## 架构
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Hermes Agent                             │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐       │
-│  │ TUI 会话  │  │ 飞书消息  │  │ Cron 任务 │  │ MiMo Code│       │
-│  └─────┬────┘  └─────┬────┘  └─────┬────┘  └─────┬────┘       │
-│        └──────────────┴──────────────┴──────────────┘           │
-│                           │ mem0x 插件                           │
-└───────────────────────────┼─────────────────────────────────────┘
-                            │ HTTP API (28768)
-┌───────────────────────────┼─────────────────────────────────────┐
-│                    mem0x API Server                              │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │  FastAPI (mem0x_server.py)                              │    │
-│  │  ├── 认证中间件 (API Key + Redis 速率限制)                │    │
-│  │  ├── 安全写入链路 (pipeline.py)                          │    │
-│  │  │   ├── 注入防御 (L1 正则 + L2 Unicode 归一化)          │    │
-│  │  │   ├── PII 脱敏 (身份证/手机/邮箱/密码)                │    │
-│  │  │   ├── 去重拦截 (Jaccard + 语义相似度)                 │    │
-│  │  │   ├── 矛盾消解 (规则 + LLM 单次判断)                 │    │
-│  │  │   └── 写入补偿 (失败自动重试队列)                     │    │
-│  │  ├── 搜索链路 (向量 + BM25 + Reranker + 评分)           │    │
-│  │  └── 后台任务 (consolidation/evolve/reflect/auto_expire)│    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                                                                 │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
-│  │ 工作记忆层    │  │ 碎片合并      │  │ 自进化引擎    │          │
-│  │ Redis+SQLite │  │ consolidation│  │ evolve_mem   │          │
-│  │ (L1/L2双层)  │  │ +LLM摘要压缩 │  │ +质量分析    │          │
-│  └──────────────┘  └──────────────┘  └──────────────┘          │
-└─────────────────────────────────────────────────────────────────┘
-                            │
-        ┌───────────────────┼───────────────────┐
-        │                   │                   │
-┌───────┴───────┐  ┌───────┴───────┐  ┌───────┴───────┐
-│   Qdrant      │  │   Redis       │  │   SQLite      │
-│  (向量存储)    │  │  (缓存/限流)   │  │  (持久化)     │
-│  :6333        │  │  :6379 (db0/1)│  │  6个数据库     │
-│  12959条记忆   │  │  速率限制+WM缓存│  │  FTS5/salience│
-│  1024维 bge-m3│  │              │  │  conflict/... │
-└───────────────┘  └───────────────┘  └───────────────┘
-        │
-┌───────┴───────────────────────────────────────┐
-│            Embedding 集群 (4节点)              │
-│  nginx:28770 → n8/n9/n10/n11 (bge-m3 CPU)    │
-│  每节点 7 workers, 总 28 并发                  │
-└───────────────────────────────────────────────┘
-        │
-┌───────┴───────────────────────────────────────┐
-│            Reranker 集群 (2节点)               │
-│  nginx:28795 → n1/n2 (bge-reranker-v2-m3)    │
-│  每节点 7 workers, 总 14 并发                  │
-└───────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                      客户端层                                  │
+│  Hermes Agent (插件)    MCP Server (stdio)    curl / SDK      │
+└──────────┬──────────────────┬─────────────────┬──────────────┘
+           │ HTTP             │ HTTP            │ HTTP
+┌──────────┴──────────────────┴─────────────────┴──────────────┐
+│                    mem0x API Server                           │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐             │
+│  │ 安全写入链路 │  │ 搜索链路    │  │ 后台任务    │             │
+│  │ pipeline    │  │ 向量+BM25  │  │ consolidation│            │
+│  └────────────┘  │ +Reranker  │  │ evolve/reflect│           │
+│                  └────────────┘  └────────────┘             │
+└──────────┬──────────────────┬─────────────────┬──────────────┘
+           │                  │                 │
+┌──────────┴──────┐ ┌────────┴────────┐ ┌──────┴──────┐
+│   Qdrant        │ │   Redis          │ │   SQLite    │
+│   向量存储       │ │   缓存+限流      │ │   持久化     │
+│   (bge-m3 1024d)│ │   db0:限流/游标  │ │   6个数据库   │
+│                 │ │   db1:工作记忆    │ │             │
+└─────────────────┘ └─────────────────┘ └─────────────┘
+           │
+┌──────────┴──────────────────────────────────────────┐
+│              Embedding 集群 (可选，本地部署)           │
+│   nginx:28770 → n8/n9/n10/n11 (bge-m3 CPU, 28并发) │
+│   nginx:28795 → n1/n2 (bge-reranker-v2-m3, 14并发) │
+└─────────────────────────────────────────────────────┘
 ```
 
-## 核心组件
+## 仓库结构
 
-### 服务层
-
-| 组件 | 说明 |
-|------|------|
-| `mem0x_server.py` | FastAPI 主服务，暴露所有 HTTP 端点 |
-| `security/pipeline.py` | 安全写入链路：注入防御 → PII脱敏 → 去重 → 矛盾消解 → 语义判重 |
-| `security/conflict_resolver.py` | 矛盾消解：规则驱动 + 单次 LLM 判断（去投票优化） |
-| `security/compensation.py` | 补偿队列：写入失败自动重试，SQLite 持久化 |
-| `security/circuit_breaker.py` | 断路器：Qdrant/LLM 故障隔离 |
-| `security/detection_guard.py` | 注入防御：L1 正则 + L2 Unicode 归一化 |
-| `security/db_common.py` | 数据库公共模块：连接管理 + Schema 统一 |
-
-### 记忆管理层
-
-| 组件 | 说明 |
-|------|------|
-| `wrapper/working_memory.py` | **工作记忆层**：Redis L1 缓存 + SQLite L2 持久化（v0.2.0 新增） |
-| `wrapper/consolidation.py` | 碎片合并：无 LLM 算法（pick_best/keyword_merge） + LLM 摘要压缩 |
-| `wrapper/reconcile.py` | 三库对账：Qdrant ↔ SQLite 数据一致性检查 + 自动修复 |
-| `wrapper/salience.py` | 显著性追踪：访问热度 + 衰减曲线 |
-| `wrapper/fsrs_bridge.py` | FSRS-6 质量评估：标准间隔重复算法 |
-| `wrapper/version_tracker.py` | 版本追踪：记忆修改历史 + 回滚能力 |
-| `wrapper/core_memory.py` | 核心记忆：高重要性记忆独立存储 |
-| `wrapper/reflect.py` | 反思引擎：定期质量分析 + 低质清理 |
-| `wrapper/evolve_mem.py` | 自进化：质量分析 + 低质清理 |
-| `wrapper/auto_expire.py` | 过期清理：lane TTL + expires 标记 |
-| `wrapper/fetch_all.py` | 分页获取 + 多用户发现（绕过 mem0 get_all 限制） |
-
-### 插件层
-
-| 组件 | 说明 |
-|------|------|
-| `plugins/mem0x/` | Hermes Agent 插件：将 mem0x 注册为 Agent 工具 |
-
-## 数据存储
-
-### Redis (db=0: 限流/游标, db=1: 工作记忆缓存)
-
-| Key 模式 | 类型 | 用途 |
-|----------|------|------|
-| `ratelimit:*` | Sorted Set | API 速率限制（滑动窗口） |
-| `consolidation:cursor:*` | String | 碎片合并游标（30天TTL） |
-| `wm1:item:{memory_id}` | Hash | 工作记忆条目（7字段） |
-| `wm1:user:{user_id}` | Set | 用户工作记忆ID索引 |
-| `wm1:count` | String | 工作记忆全局计数器 |
-
-### SQLite 数据库
-
-| 数据库 | 用途 | 关键表 |
-|--------|------|--------|
-| `fts5.db` | FTS5 全文索引 + BM25 IDF | `mem0_fts5` |
-| `salience.db` | 显著性/热度追踪 | `salience` |
-| `conflict.db` | 矛盾消解记录 | `conflicts` |
-| `compensation.db` | 写入补偿队列 | `tasks` |
-| `version_history.db` | 版本追踪 | `versions` |
-| `core_memory.db` | 核心记忆 | `core_memories` |
-| `reflect.db` | 反思日志 | `logs` |
-| `delete_audit.db` | 删除审计 | `delete_audit` |
-| `working_memory.db` | 工作记忆（L2持久化） | `working_memory` |
-
-### Qdrant (向量存储)
-
-| Collection | 维度 | 用途 |
-|------------|------|------|
-| `mem0` | 1024 | 主记忆存储（bge-m3 embedding） |
-| `mem0_entities` | 1024 | 实体存储 |
-| `mem0_bm25` | - | BM25 稀疏向量 |
-
-## 模型与组件
-
-### LLM
-
-| 用途 | 模型 | 提供方 |
-|------|------|--------|
-| 矛盾消解 | MiMo v2.5 Pro | 小米 MiMo API |
-| 碎片合并摘要 | MiMo v2.5 | 小米 MiMo API |
-| 记忆提取 | MiMo v2.5 Pro | 小米 MiMo API |
-
-### Embedding
-
-| 模型 | 部署 | 并发 |
-|------|------|------|
-| BAAI/bge-m3 | 4节点 CPU (n8/n9/n10/n11) | 每节点7 workers, 共28并发 |
-| 量化 | FP32 → INT8 | 内存限制 2GB/节点 |
-
-### Reranker
-
-| 模型 | 部署 | 并发 |
-|------|------|------|
-| BAAI/bge-reranker-v2-m3 | 2节点 CPU (n1/n2) | 每节点7 workers, 共14并发 |
-
-### 向量数据库
-
-| 组件 | 版本 | 说明 |
-|------|------|------|
-| Qdrant | latest | 向量存储 + BM25 稀疏搜索 |
-| Redis | 7-alpine | 缓存 + 限流 + 游标 |
+```
+mem0x/
+├── mem0x_server.py              # FastAPI 主服务（所有 HTTP 端点）
+├── __init__.py                  # 包初始化 + mem0 Memory 运行时配置
+├── requirements.txt             # Python 依赖
+├── Dockerfile                   # Docker 镜像构建
+├── config.json                  # 本地开发配置（生产由 compose 挂载覆盖）
+├── config-compose.json.example  # 生产配置模板
+├── config.json.example          # 本地开发配置模板
+│
+├── security/                    # 安全层
+│   ├── pipeline.py              # 写入链路编排：注入防御→PII脱敏→去重→矛盾消解→语义判重
+│   ├── injection_guard.py       # 注入防御：L1 正则 + L2 Unicode 归一化
+│   ├── pii.py                   # PII 脱敏：身份证/手机/邮箱/密码
+│   ├── dedup.py                 # 去重：Jaccard + 语义相似度拦截
+│   ├── conflict_resolver.py     # 矛盾消解：规则驱动 + LLM 单次判断
+│   ├── compensation.py          # 补偿队列：写入失败自动重试（SQLite 持久化）
+│   ├── circuit_breaker.py       # 断路器：Qdrant/LLM 故障隔离
+│   ├── degradation.py           # 降级策略：服务不可用时的降级逻辑
+│   ├── scoring.py               # 评分权重计算
+│   ├── db_common.py             # SQLite 公共模块：连接管理 + Schema 统一
+│   └── utils.py                 # 工具函数：配置加载、API key 管理
+│
+├── wrapper/                     # 记忆管理层
+│   ├── working_memory.py        # 工作记忆：Redis L1 缓存 + SQLite L2 持久化
+│   ├── consolidation.py         # 碎片合并：无 LLM 算法 + LLM 摘要压缩
+│   ├── reconcile.py             # 三库对账：Qdrant ↔ SQLite 数据一致性检查
+│   ├── salience.py              # 显著性追踪：访问热度 + 衰减曲线
+│   ├── fsrs_bridge.py           # FSRS-6 质量评估：标准间隔重复算法
+│   ├── version_tracker.py       # 版本追踪：记忆修改历史 + 回滚
+│   ├── core_memory.py           # 核心记忆：高重要性记忆独立存储
+│   ├── reflect.py               # 反思引擎：定期质量分析 + 低质清理
+│   ├── evolve_mem.py            # 自进化：质量分析 + 低质清理
+│   ├── auto_expire.py           # 过期清理：lane TTL + expires 标记
+│   ├── fetch_all.py             # 分页获取 + 多用户发现
+│   ├── index_sync.py            # 跨存储同步：删除/合并后同步 FTS5/salience
+│   ├── fts5_store.py            # FTS5 全文索引 + BM25 IDF
+│   ├── sparse_vector.py         # BM25 稀疏向量
+│   ├── hot_archive.py           # 热归档：高质量记忆独立存储
+│   ├── evolve_lock.py           # 自进化分布式锁
+│   ├── spacy_ner.py             # spaCy NER 实体提取
+│   ├── tags_hook.py             # 标签 hook：NER 结果存入 Qdrant payload
+│   └── mem0_runtime.py          # mem0 Memory 运行时配置
+│
+├── plugin/                      # Hermes Agent 插件
+│   ├── __init__.py              # 插件入口：注册 mem0_search/mem0_add/mem0_update/mem0_delete
+│   ├── plugin.yaml              # 插件元数据
+│   └── mem0x.json.example       # 插件配置模板
+│
+├── mcp/                         # MCP Server（Model Context Protocol）
+│   ├── mem0x_mcp_server.py      # MCP 服务端：stdio JSON-RPC，6 个工具
+│   ├── mem0x_client.py          # HTTP 客户端：连接 mem0x API
+│   ├── pyproject.toml           # 打包配置
+│   └── README.md                # MCP 配置文档
+│
+├── tests/                       # 测试
+│   ├── test_core.py             # 基础测试：注入防御/断路器/PII脱敏
+│   ├── test_working_memory.py   # 工作记忆测试：Redis缓存/SQLite/降级
+│   ├── test_consolidation.py    # 碎片合并测试：算法/LLM摘要
+│   ├── test_reconcile.py        # 三库对账测试
+│   └── test_compensation.py     # 补偿队列测试
+│
+├── scripts/                     # 运维脚本（不入库）
+│   ├── backfill_fts5.py         # FTS5 回填
+│   └── backfill_tags.py         # 标签回填
+│
+└── docs/                        # 内部文档（不入库）
+    ├── FINAL_PLAN.md
+    ├── REFACTOR_PLAN.md
+    ├── UNIFIED_API_DESIGN.md
+    └── WRITE_RELIABILITY_PLAN.md
+```
 
 ## 部署
 
-### Docker Compose（独立编排）
+### 前置条件
+
+- Docker + Docker Compose v2
+- 至少 4GB 可用内存（Embedding 集群可选，最小部署仅需 1GB）
+
+### 最小部署（API + Redis + Qdrant）
+
+仅需 3 个容器即可运行：
+
+```bash
+mkdir -p ~/.mem0x/data
+cd ~/.mem0x
+
+# 1. 复制配置模板并填入你的 API key
+cp /path/to/mem0x/config-compose.json.example ~/.mem0x/config-compose.json
+cp /path/to/mem0x/docker-compose.mem0x.yml.example ~/.mem0x/docker-compose.mem0x.yml
+cp /path/to/mem0x/docker-compose.mem0x-qdrant.yml.example ~/.mem0x/docker-compose.mem0x-qdrant.yml
+
+# 2. 编辑配置（必须修改的项）
+#    - mem0.llm.config.api_key
+#    - mem0.embedder.config.api_key（如果用云端 embedding）
+#    - server.api_key
+#    - mem0.vector_store.config.url（如果 Qdrant 不在同一 Docker 网络）
+
+# 3. 启动
+sudo docker compose -f docker-compose.redis.yml up -d
+sudo docker compose -f docker-compose.mem0x-qdrant.yml up -d
+sudo docker compose -f docker-compose.mem0x.yml up -d
+
+# 4. 验证
+curl http://127.0.0.1:28768/health
+```
+
+### 完整部署（含本地 Embedding 集群）
 
 ```bash
 cd ~/.mem0x
 
-# 1. 启动 Redis
+# 基础服务
 sudo docker compose -f docker-compose.redis.yml up -d
-
-# 2. 启动 Embedding 集群（nginx + n8-n11）
-sudo docker compose -f docker-compose.embedding-nginx.yml up -d
-
-# 3. 启动 Reranker 集群
-sudo docker compose -f docker-compose.reranker.yml up -d
-
-# 4. 启动 Qdrant
 sudo docker compose -f docker-compose.mem0x-qdrant.yml up -d
 
-# 5. 启动 API 服务
+# Embedding 集群（bge-m3，4节点 × 7 workers = 28 并发）
+sudo docker compose -f docker-compose.embedding-nginx.yml up -d
+
+# Reranker 集群（bge-reranker-v2-m3，2节点 × 7 workers = 14 并发）
+sudo docker compose -f docker-compose.reranker.yml up -d
+
+# API 服务
 sudo docker compose -f docker-compose.mem0x.yml up -d
 ```
+
+### Docker Compose 文件说明
+
+| 文件 | 用途 |
+|------|------|
+| `docker-compose.redis.yml` | Redis：速率限制 + 工作记忆缓存 + consolidation 游标 |
+| `docker-compose.mem0x-qdrant.yml` | Qdrant：向量存储 |
+| `docker-compose.mem0x.yml` | mem0x API 服务 |
+| `docker-compose.embedding-nginx.yml` | Embedding 集群：nginx 负载均衡 + 4 节点 bge-m3 |
+| `docker-compose.reranker.yml` | Reranker 集群：nginx + 2 节点 bge-reranker-v2-m3 |
 
 ### 环境变量
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
 | `MEM0X_CONFIG` | 配置文件路径 | `/app/config.json` |
-| `MEM0_TELEMETRY` | 禁用遥测 | `False` |
-| `FASTEMBED_CACHE_PATH` | Embedding 缓存路径 | `/tmp/fastembed_cache` |
-| `HF_HUB_OFFLINE` | 离线模式 | `1` |
+| `MEM0X_DATA_DIR` | 数据目录 | `/app/data` |
+| `MEM0_TELEMETRY` | 禁用 mem0 遥测 | `False` |
+| `DO_NOT_TRACK` | 禁用遥测（通用标准） | `1` |
+| `FASTEMBED_CACHE_PATH` | fastembed 模型缓存 | `/tmp/fastembed_cache` |
+| `HF_HUB_OFFLINE` | HuggingFace 离线模式 | `1` |
 
-### 配置文件
+## 配置
 
-生产配置位于 `~/.mem0x/config-compose.json`，通过 Docker volume 挂载到容器内 `/app/config.json`。
+### 配置文件层级
 
-关键配置项：
+```
+生产环境：~/.mem0x/config-compose.json → 挂载到容器 /app/config.json
+本地开发：./config.json（或环境变量 MEM0X_CONFIG 指定）
+模板文件：config-compose.json.example / config.json.example
+```
 
-```json
+### 核心配置项
+
+复制 `config-compose.json.example` 后，必须修改以下项：
+
+```jsonc
 {
   "mem0": {
-    "llm": { "provider": "openai", "config": { "model": "mimo-v2.5-pro" } },
-    "embedder": { "config": { "model": "BAAI/bge-m3", "openai_base_url": "http://mem0x-embedding-nginx:8775/v1" } },
-    "vector_store": { "config": { "url": "http://qdrant:6333", "collection_name": "mem0", "embedding_model_dims": 1024 } }
+    "llm": {
+      "config": {
+        "model": "你的LLM模型名",
+        "api_key": "你的LLM API Key",
+        "openai_base_url": "你的LLM API地址"
+      }
+    },
+    "embedder": {
+      "config": {
+        "model": "BAAI/bge-m3",
+        "api_key": "你的Embedding API Key（云端时填写）",
+        "openai_base_url": "你的Embedding API地址（云端时填写）"
+      }
+    },
+    "vector_store": {
+      "config": {
+        "url": "http://qdrant:6333",
+        "embedding_model_dims": 1024
+      }
+    }
   },
-  "redis": { "host": "redis", "port": 6379, "db": 0 },
-  "working_memory": { "enabled": true, "redis_cache": true, "db_wm": 1 },
-  "scoring": { "weights": { "vector": 0.38, "time": 0.15, "reliability": 0.1, "heat": 0.17, "confidence": 0.2 } }
+  "server": {
+    "port": 28768,
+    "api_key": "你的服务器API Key"
+  }
 }
 ```
 
+### 本地 Embedding 集群配置
+
+如果使用本地 bge-m3 替代云端 Embedding API，修改 `embedder.config`：
+
+```jsonc
+{
+  "mem0": {
+    "embedder": {
+      "config": {
+        "model": "BAAI/bge-m3",
+        "api_key": "not-needed",
+        "openai_base_url": "http://mem0x-embedding-nginx:8775/v1"
+      }
+    }
+  }
+}
+```
+
+对应 docker-compose.embedding-nginx.yml 会启动：
+- nginx 负载均衡器（端口 8775）
+- 4 个 bge-m3 CPU 节点（每节点 7 workers，共 28 并发）
+- 内存限制 2GB/节点
+
+### 本地 Reranker 集群配置
+
+```jsonc
+{
+  "rerank": {
+    "provider": "openai_compatible",
+    "config": {
+      "model": "BAAI/bge-reranker-v2-m3",
+      "api_key": "not-needed",
+      "openai_base_url": "http://mem0x-reranker-nginx:8795/v1"
+    }
+  }
+}
+```
+
+### 禁用 mem0 PostHog 追踪
+
+mem0 默认通过 PostHog 收集使用数据。通过以下环境变量禁用（已在 Dockerfile 和 compose 中配置）：
+
+```bash
+MEM0_TELEMETRY=False
+DO_NOT_TRACK=1
+```
+
+如果仍有追踪请求，可在代码中彻底禁用：
+
+```python
+import mem0.memory.telemetry as telemetry
+telemetry.disable_telemetry()
+```
+
+### 禁止 fastembed/spaCy 首次运行下载
+
+fastembed 和 spaCy 默认在首次使用时从网络下载模型，在生产环境可能因网络问题卡住。
+
+**解决方案：在 Dockerfile 中预装模型**（已内置）
+
+```dockerfile
+# fastembed 模型通过 volume 挂载缓存
+volumes:
+  - /path/to/fastembed-cache:/tmp/fastembed_cache
+
+# spaCy 模型在构建时安装（不从网络下载）
+COPY en_core_web_sm-3.8.0.tar.gz /tmp/
+RUN tar xzf /tmp/en_core_web_sm-3.8.0.tar.gz -C /usr/local/lib/python3.12/site-packages/
+COPY zh_core_web_sm-3.8.0.tar.gz /tmp/
+RUN pip install --no-cache-dir /tmp/zh_core_web_sm-3.8.0.tar.gz
+```
+
+**离线构建**：将 `.tar.gz` 模型文件放在仓库根目录（已在 `.gitignore` 中排除），构建镜像时不会触发网络下载。
+
+```bash
+# 首次下载模型（需要网络）
+pip download fastembed -d /tmp/fastembed-pkgs
+python -m spacy download zh_core_web_sm
+python -m spacy download en_core_web_sm
+
+# 离线构建镜像
+sudo docker build --network=none -t mem0xapi:v0.2.0 .
+```
+
+## Hermes Agent 插件
+
+### 安装
+
+将 `plugin/` 目录复制到 Hermes 插件目录：
+
+```bash
+cp -r /path/to/mem0x/plugin ~/.hermes/profiles/<profile>/plugins/mem0x
+```
+
+### 配置
+
+编辑 `~/.hermes/profiles/<profile>/plugins/mem0x/mem0x.json`：
+
+```json
+{
+  "service_url": "http://127.0.0.1:28768",
+  "user_id": "你的用户ID",
+  "agent_id": "hermes"
+}
+```
+
+### 注册的工具
+
+| 工具名 | 说明 |
+|--------|------|
+| `mem0_search` | 语义搜索记忆 |
+| `mem0_add` | 写入记忆（自动走安全链路） |
+| `mem0_update` | 更新记忆 |
+| `mem0_delete` | 软删除记忆 |
+
+## MCP Server
+
+mem0x-mcp 是独立的 MCP 服务，通过 JSON-RPC stdio 协议为 Claude Code、MiMo Code 等编码 Agent 提供记忆能力。
+
+### 安装
+
+```bash
+cd mcp/
+pip install .
+# 或直接运行
+python mem0x_mcp_server.py
+```
+
+### 环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `MEM0X_URL` | `http://127.0.0.1:28768` | mem0x API 地址 |
+| `MEM0X_API_KEY` | (空) | API Key（服务端开启认证时必填） |
+| `MEM0X_AGENT_ID` | `mimocode` | Agent 标识，用于记忆归属 |
+
+### Claude Code 配置
+
+在项目根目录创建 `.mcp.json`：
+
+```json
+{
+  "mcpServers": {
+    "mem0x": {
+      "command": "python3",
+      "args": ["/path/to/mem0x/mcp/mem0x_mcp_server.py"],
+      "env": {
+        "MEM0X_URL": "http://127.0.0.1:28768",
+        "MEM0X_API_KEY": "你的API Key",
+        "MEM0X_AGENT_ID": "claude-code"
+      }
+    }
+  }
+}
+```
+
+### MiMo Code 配置
+
+编辑 `~/.config/mimocode/mimocode.jsonc`：
+
+```json
+{
+  "mcp": {
+    "mem0x": {
+      "type": "local",
+      "command": ["python3", "/path/to/mem0x/mcp/mem0x_mcp_server.py"],
+      "environment": {
+        "MEM0X_URL": "http://127.0.0.1:28768",
+        "MEM0X_API_KEY": "你的API Key"
+      }
+    }
+  }
+}
+```
+
+### 提供的工具
+
+| 工具 | 说明 |
+|------|------|
+| `search_memory` | 语义搜索 + 知识图谱召回 |
+| `add_memory` | 写入记忆（自动注入防御/PII脱敏/去重/矛盾消解） |
+| `update_memory` | 更新记忆 |
+| `delete_memory` | 软删除 |
+| `get_graph` | 导出知识图谱（实体+关系） |
+| `get_stats` | 存储统计 |
+
 ## API 端点
+
+### 认证
+
+所有端点（`/health` 除外）需要 API Key：
+
+```bash
+# 方式 1：X-API-Key header
+curl -H "X-API-Key: YOUR_KEY" http://127.0.0.1:28768/...
+
+# 方式 2：Authorization Bearer
+curl -H "Authorization: Bearer YOUR_KEY" http://127.0.0.1:28768/...
+```
 
 ### 核心 CRUD
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
-| POST | `/add` | 写入记忆（安全链路：注入防御→PII脱敏→去重→矛盾消解） |
-| POST | `/search` | 搜索记忆（向量+BM25+Reranker+评分） |
+| POST | `/add` | 写入记忆（安全链路） |
+| POST | `/search` | 搜索记忆（向量+BM25+Reranker） |
 | POST | `/update` | 更新记忆 |
 | POST | `/delete` | 软删除（需 confirm_token 确认硬删） |
 
@@ -227,7 +443,7 @@ sudo docker compose -f docker-compose.mem0x.yml up -d
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
-| POST | `/working-memory/list` | 获取用户工作记忆列表（Redis优先，SQLite兜底） |
+| POST | `/working-memory/list` | 获取工作记忆（Redis 优先，SQLite 兜底） |
 | POST | `/working-memory/clear` | 清空工作记忆 |
 
 ### 后台任务
@@ -244,75 +460,102 @@ sudo docker compose -f docker-compose.mem0x.yml up -d
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
-| GET | `/health` | 健康检查 |
+| GET | `/health` | 健康检查（免认证） |
 | GET | `/stats` | 统计信息 |
-| GET | `/openapi.json` | API 文档 |
 
-## 安全
+## 安全机制
 
-- **注入防御**：L1 正则匹配 + L2 Unicode 归一化，拦截 prompt injection
-- **PII 脱敏**：身份证、手机号、邮箱、密码（支持中英文关键词）
-- **API Key 认证**：`X-API-Key` header 或 `Authorization: Bearer` token
-- **速率限制**：Redis 滑动窗口（add: 30次/分钟）
-- **删除确认**：两步删除（软删 → confirm_token → 硬删），token 一次性 + api_key 绑定
-- **跨库事务**：补偿队列覆盖 Qdrant/Neo4j/salience/FTS5 写入失败
+| 机制 | 说明 |
+|------|------|
+| 注入防御 | L1 正则匹配 + L2 Unicode 归一化，拦截 prompt injection |
+| PII 脱敏 | 身份证号、手机号、邮箱、密码（中英文关键词） |
+| API Key 认证 | X-API-Key header 或 Bearer token |
+| 速率限制 | Redis 滑动窗口（默认 add: 30 次/分钟） |
+| 删除确认 | 两步删除（软删 → confirm_token → 硬删） |
+| 补偿队列 | 写入失败自动重试（SQLite 持久化，支持 add/delete） |
+| 断路器 | Qdrant/LLM 故障隔离，自动熔断恢复 |
+| 矛盾消解 | 新旧记忆冲突时自动判断，保留正确版本 |
+
+## 存储
+
+### Redis
+
+| db | 用途 | Key 模式 |
+|----|------|----------|
+| 0 | 速率限制 | `ratelimit:*` (Sorted Set) |
+| 0 | consolidation 游标 | `consolidation:cursor:*` |
+| 1 | 工作记忆缓存 | `wm1:item:*` (Hash), `wm1:user:*` (Set), `wm1:count` |
+
+AOF 持久化已启用，重启不丢数据。
+
+### SQLite
+
+| 数据库 | 用途 |
+|--------|------|
+| `fts5.db` | FTS5 全文索引 + BM25 IDF |
+| `salience.db` | 显著性/热度追踪 |
+| `conflict.db` | 矛盾消解记录 |
+| `compensation.db` | 补偿队列 |
+| `version_history.db` | 版本追踪 |
+| `core_memory.db` | 核心记忆 |
+| `reflect.db` | 反思日志 |
+| `delete_audit.db` | 删除审计 |
+| `working_memory.db` | 工作记忆（L2 持久化） |
+
+### Qdrant
+
+| Collection | 维度 | 说明 |
+|------------|------|------|
+| `mem0` | 1024 | 主记忆存储 |
+| `mem0_entities` | 1024 | 实体存储 |
+| `mem0_bm25` | - | BM25 稀疏向量 |
+
+## 测试
+
+```bash
+cd /home/ubuntu/workspace/mem0xAPI
+
+# 运行全部测试
+python -m pytest tests/ -v
+
+# 运行单个模块
+python -m pytest tests/test_working_memory.py -v
+
+# 代码检查
+python -m py_compile mem0x_server.py
+```
+
+测试使用临时 SQLite 文件和 mock Qdrant，不碰真实数据库。
+
+## 版本号规则
+
+patch 位到 50 时进位到 minor 位：
+
+```
+0.1.50 → 0.2.0
+0.2.50 → 0.3.0
+```
 
 ## 版本历史
 
-### v0.2.0 (2026-08-28)
-- **Redis 工作记忆缓存层**：L1 Redis + L2 SQLite 双层架构，消除多进程并发锁争抢
-- **LLM 摘要压缩**：consolidation 合并时用 LLM 生成摘要（替代简单拼接）
-- **裸 except 修复**：22个文件的 bare except 全部加 logger.warning/debug
-- **测试覆盖扩展**：4个新测试文件，120→126 tests
-
-### v0.1.50 (2026-008-28)
-- 3.2b LLM摘要压缩 + 裸except修复(22文件)
-
-### v0.1.49 (2026-08-28)
-- 工作记忆层 Phase 1 - SQLite持久化 + 搜索注入 + 删除联动
-
-### v0.1.48 (2026-08-28)
-- 动态衰减曲线（adaptive模式）+ consolidation阈值调优
-
-### v0.1.47 (2026-08-28)
-- consolidation归档修复 + reflect联动 + compensation迁移
-
-### v0.1.46 (2026-08-28)
-- sync_after_merge补偿兜底 + embedding/reranker/FTS5调用日志
-
-### v0.1.45 (2026-08-28)
-- FTS5根因修复 + 回填脚本 + reconcile自动回填
-
-### v0.1.44 (2026-08-28)
-- Sprint 2: reconcile + compensation delete + salience→FSRS + FTS5双写修复
-
-### v0.1.43 (2026-08-27)
-- Embedding本地化：4节点 bge-m3 CPU 集群 + nginx负载均衡
-- 矛盾消解去投票：并行投票3次→单次LLM判断
-- BM25 IDF 持久化 + FSRS card 持久化
-- async改造 + P0/P1/P2/P3 全量修复（27项审计清零）
-
-## 开发
-
-```bash
-# 本地测试
-cd /home/ubuntu/workspace/mem0xAPI
-python3 -m py_compile mem0x_server.py
-
-# 运行测试
-python -m pytest tests/ -v
-
-# 构建镜像
-sudo docker build -t mem0xapi:v0.2.0 .
-
-# 部署
-cd ~/.mem0x
-sudo docker compose -f docker-compose.mem0x.yml up -d
-
-# 版本号规则：patch 到 50 进位
-# 0.1.50 → 0.2.0, 0.2.50 → 0.3.0
-```
+| 版本 | 日期 | 主要变更 |
+|------|------|----------|
+| v0.2.0 | 2026-08-28 | Redis 工作记忆缓存层、LLM 摘要压缩、裸 except 修复、测试覆盖 |
+| v0.1.43 | 2026-08-27 | Embedding 本地化、矛盾消解去投票、BM25/FSRS 持久化、P0-P3 审计修复 |
+| v0.1.27 | 2026-08-26 | IndexSync 跨存储同步、consolidation 无 LLM 算法、Redis 游标 |
+| v0.1.17 | 2026-08-24 | 全量 async 迁移、API Key 认证、Redis 速率限制 |
 
 ## License
 
 MIT
+
+## 致谢
+
+- [mem0](https://github.com/mem0ai/mem0) — 核心记忆框架
+- [aiduMEI](https://github.com/monkey2jack/aiduMEI) — 架构设计灵感
+- [Qdrant](https://github.com/qdrant/qdrant) — 向量数据库
+- [FSRS](https://github.com/open-spaced-repetition/fsrs-rs) — 间隔重复算法
+- [fastembed](https://github.com/qdrant/fastembed) — 本地 Embedding 推理
+- [spaCy](https://github.com/explosion/spaCy) — NER 实体提取
+- [Hermes Agent](https://github.com/NousResearch/hermes-agent) — Agent 框架
+- [MiMo](https://github.com/XiaoMi/mimo) — LLM / Reranker 模型

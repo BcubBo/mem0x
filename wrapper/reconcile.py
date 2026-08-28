@@ -3,13 +3,15 @@
 每 6h 运行一次，比对三端 memory_id 集合一致性。
 策略：宁可漏删不要误删。
 - Qdrant 已标 deleted + FTS5/salience 仍有记录 → 清理孤儿
-- Qdrant 存在但 FTS5 缺失 → 只告警（不自动修复，避免误写）
+- Qdrant 存在但 FTS5 缺失 → 告警（可配置自动回填）
 - FTS5 存在但 Qdrant 不存在 → 告警（可能是孤儿索引）
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import threading
 import time
 from typing import Any, Dict, Optional, Set
@@ -25,6 +27,59 @@ _running = False
 _thread: Optional[threading.Thread] = None
 _last_run: Optional[float] = None
 _last_result: Optional[Dict[str, Any]] = None
+
+
+def _load_config() -> dict:
+    """从 config.json 读取 reconcile 配置。"""
+    config_path = os.environ.get("MEM0X_CONFIG", "config.json")
+    try:
+        with open(config_path) as f:
+            cfg = json.load(f)
+        return cfg.get("reconcile", {})
+    except Exception:
+        return {}
+
+
+def _fetch_qdrant_content(memory_ids: Set[str]) -> Dict[str, Dict[str, str]]:
+    """从 Qdrant 批量获取指定 memory_id 的 content 和 user_id。
+
+    Returns:
+        {memory_id: {"content": ..., "user_id": ...}}
+    """
+    from wrapper.mem0_runtime import get_memory
+    mem = get_memory()
+    if mem is None:
+        return {}
+
+    try:
+        client = mem.vector_store.client
+        collection = getattr(mem.vector_store, "collection_name", "mem0")
+    except AttributeError:
+        return {}
+
+    result: Dict[str, Dict[str, str]] = {}
+    id_list = list(memory_ids)
+
+    # 分批 retrieve（Qdrant retrieve 上限约 1000）
+    for i in range(0, len(id_list), QDRANT_BATCH_SIZE):
+        batch = id_list[i:i + QDRANT_BATCH_SIZE]
+        try:
+            points = client.retrieve(
+                collection_name=collection,
+                ids=batch,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for pt in points:
+                payload = pt.payload or {}
+                content = payload.get("data", "") or payload.get("memory", "")
+                user_id = payload.get("user_id", "")
+                if content:
+                    result[str(pt.id)] = {"content": content, "user_id": user_id}
+        except Exception as e:
+            logger.warning("reconcile: Qdrant retrieve 批次失败: %s", e)
+
+    return result
 
 
 # ═══════════════════════════════════════════════════
@@ -139,7 +194,7 @@ def reconcile_all() -> Dict[str, Any]:
 
     策略：宁可漏删不要误删。
     - Qdrant 已标 deleted + FTS5/salience 仍有记录 → 清理孤儿
-    - Qdrant 存在但 FTS5 缺失 → 只告警
+    - Qdrant 存在但 FTS5 缺失 → 告警（可配置 auto_backfill_fts5 自动回填）
     - FTS5 存在但 Qdrant 不存在 → 告警（孤儿索引）
     - salience 存在但 Qdrant 不存在 → 告警
 
@@ -160,7 +215,7 @@ def reconcile_all() -> Dict[str, Any]:
     deleted_in_fts5 = qdrant_deleted & fts5_ids
     deleted_in_salience = qdrant_deleted & salience_ids
 
-    # 场景 B：Qdrant active 但 FTS5 缺失 → 告警（不修复）
+    # 场景 B：Qdrant active 但 FTS5 缺失 → 可配置自动回填
     missing_fts5 = qdrant_active - fts5_ids
 
     # 场景 C：FTS5 存在但 Qdrant 不存在（active+deleted 都没有）→ 告警
@@ -199,6 +254,27 @@ def reconcile_all() -> Dict[str, Any]:
         except Exception as e:
             logger.warning("reconcile: salience 清理批次失败: %s", e)
 
+    # 场景 B 处理：可配置的 FTS5 自动回填
+    backfilled_fts5 = 0
+    reconcile_cfg = _load_config()
+    auto_backfill = reconcile_cfg.get("auto_backfill_fts5", False)
+
+    if missing_fts5 and auto_backfill:
+        logger.info("reconcile: 自动回填 %d 条缺失 FTS5 记录", len(missing_fts5))
+        try:
+            from wrapper.fts5_store import get_fts5
+            fts5 = get_fts5()
+            records = _fetch_qdrant_content(missing_fts5)
+            for mid, info in records.items():
+                try:
+                    fts5.write(mid, info["content"], info["user_id"])
+                    backfilled_fts5 += 1
+                except Exception as e:
+                    logger.debug("reconcile: FTS5 回填失败 %s: %s", mid[:12], e)
+            logger.info("reconcile: FTS5 自动回填完成 %d/%d", backfilled_fts5, len(missing_fts5))
+        except Exception as e:
+            logger.warning("reconcile: FTS5 自动回填批次失败: %s", e)
+
     elapsed_ms = int((time.time() - start) * 1000)
 
     # 4. 构建结果
@@ -215,6 +291,7 @@ def reconcile_all() -> Dict[str, Any]:
             "fts5": cleaned_fts5,
             "salience": cleaned_salience,
         },
+        "fts5_backfilled": backfilled_fts5,
         "warnings": {
             "missing_fts5": len(missing_fts5),
             "orphan_fts5": len(orphan_fts5),
@@ -227,8 +304,12 @@ def reconcile_all() -> Dict[str, Any]:
     if missing_fts5:
         sample = list(missing_fts5)[:20]
         result["warnings"]["missing_fts5_sample"] = sample
-        logger.warning("reconcile: %d 条 Qdrant active 记忆在 FTS5 中缺失（示例: %s）",
-                        len(missing_fts5), ", ".join(s[:12] for s in sample[:5]))
+        if auto_backfill:
+            logger.info("reconcile: %d 条 FTS5 缺失，自动回填 %d 条",
+                        len(missing_fts5), backfilled_fts5)
+        else:
+            logger.warning("reconcile: %d 条 Qdrant active 记忆在 FTS5 中缺失（示例: %s）",
+                           len(missing_fts5), ", ".join(s[:12] for s in sample[:5]))
 
     if orphan_fts5:
         sample = list(orphan_fts5)[:20]

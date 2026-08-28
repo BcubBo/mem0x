@@ -164,6 +164,13 @@ async def safe_add(
             except Exception as e:
                 logger.warning("dedup update 失败: %s", e)
                 return {"action": "error", "reason": f"dedup update failed: {e}"}
+            # FTS5 同步：dedup 更新了内容，同步到 FTS5
+            try:
+                from wrapper.fts5_store import get_fts5
+                get_fts5().write(mem_id, content, user_id)
+            except Exception as e:
+                logger.warning("FTS5 conflict+dedup sync 失败，入补偿队列: %s", e)
+                _enqueue_compensation(content, filters, metadata)
             return {"action": "duplicate", "memory_id": mem_id, "similarity": sim}
         # 语义判重通过，写入新记忆
         try:

@@ -622,13 +622,6 @@ async def add_memory(req: AddRequest, request: Request):
         except Exception as e:
             logger.warning("version_tracker init 失败: %s", e)
 
-        # FTS5 双写
-        try:
-            from wrapper.fts5_store import get_fts5
-            await loop.run_in_executor(None, get_fts5().write, memory_id, content, user_id)
-        except Exception as e:
-            logger.warning("FTS5 write 失败: %s", e)
-
         # tags hook：提取实体写入 Qdrant payload（Qdrant set_payload，同步调用需放线程池）
         try:
             from wrapper.tags_hook import on_add

@@ -205,6 +205,8 @@ async def lifespan(app: FastAPI):
     reflect.stop()
     hot_archive.stop()
     reconcile.stop()
+    from wrapper.fts5_store import close_fts5
+    close_fts5()
     logger.info("mem0x 已关闭")
 
 

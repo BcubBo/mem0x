@@ -352,6 +352,14 @@ class FTS5Store:
                 row = self._conn.execute("SELECT COUNT(*) FROM fts5_meta").fetchone()
             return row[0] if row else 0
 
+    def close(self) -> None:
+        """关闭底层 SQLite 连接。"""
+        with self._lock:
+            try:
+                self._conn.close()
+            except Exception as e:
+                logger.debug("fts5 close: %s", e)
+
 
 # 单例
 _fts5_instance: FTS5Store | None = None
@@ -363,3 +371,11 @@ def get_fts5(db_path: str = "data/fts5.db") -> FTS5Store:
     if _fts5_instance is None:
         _fts5_instance = FTS5Store()
     return _fts5_instance
+
+
+def close_fts5() -> None:
+    """关闭 FTS5Store 单例连接（lifespan shutdown 时调用）。"""
+    global _fts5_instance
+    if _fts5_instance is not None:
+        _fts5_instance.close()
+        _fts5_instance = None

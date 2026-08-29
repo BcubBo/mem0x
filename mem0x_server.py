@@ -781,7 +781,7 @@ async def _search_memory_impl(req: SearchRequest, request: Request):
     except Exception as e:
         logger.debug("FTS5 snippet 失败: %s", e)
 
-    # 工作记忆注入：作为 high-priority 候选（权重可配置）
+    # 工作记忆注入：作为 high-priority 候选（权重可配置 + 访问频率衰减）
     try:
         wm_cfg = {}
         try:
@@ -793,18 +793,28 @@ async def _search_memory_impl(req: SearchRequest, request: Request):
             wm_items = await loop.run_in_executor(None, working_memory.list_items, user_id)
             wm_weight = wm_cfg.get("injection_weight", 1.5)
             wm_ttl = wm_cfg.get("default_ttl_days", 90)
+            wm_decay = wm_cfg.get("access_decay_factor", 0.1)  # 衰减系数：越大衰减越快
+            wm_max_items = wm_cfg.get("max_inject_items", 50)   # 最大注入数量
             existing_contents = {r.get("memory", "").strip() for r in results if r.get("memory")}
             wm_injected = 0
+            wm_skipped = 0
             for item in wm_items:
+                if wm_injected >= wm_max_items:
+                    break
                 wm_content = item.get("content", "").strip()
                 if not wm_content or wm_content in existing_contents:
+                    wm_skipped += 1
                     continue
                 wm_id = item.get("memory_id", f"wm-{item.get('id', '')}")
+                # 根据访问次数衰减权重：访问越多，权重越低（避免反复刷屏）
+                access_count = int(item.get("access_count", 0))
+                decay_factor = 1.0 / (1.0 + access_count * wm_decay)
+                final_weight = wm_weight * decay_factor
                 results.append({
                     "id": wm_id,
                     "memory": wm_content,
-                    "score": wm_weight,
-                    "metadata": {"source": "working_memory", "original_memory_id": item.get("memory_id", "")},
+                    "score": final_weight,
+                    "metadata": {"source": "working_memory", "original_memory_id": item.get("memory_id", ""), "access_count": access_count},
                     "hash": "",
                     "created_at": item.get("created_at"),
                     "updated_at": item.get("accessed_at"),
@@ -819,8 +829,8 @@ async def _search_memory_impl(req: SearchRequest, request: Request):
                 except Exception:
                     logger.debug("working_memory touch failed", exc_info=True)
                 wm_injected += 1
-            if wm_injected:
-                logger.info("🧠 working_memory: 注入 %d 条候选 (weight=%.1f)", wm_injected, wm_weight)
+            if wm_injected or wm_skipped:
+                logger.info("🧠 working_memory: 注入 %d 条候选, 跳过 %d 条 (base=%.1f, decay=%.2f, max=%d)", wm_injected, wm_skipped, wm_weight, wm_decay, wm_max_items)
     except Exception as e:
         logger.debug("working_memory 注入失败: %s", e)
 

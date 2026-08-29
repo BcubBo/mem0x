@@ -11,14 +11,36 @@ from __future__ import annotations
 import json
 import logging
 import os
-import threading
+import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger("hermes_plugins.mem0x")
 
 _pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="mem0x")
+
+
+def _retry(fn: Callable, max_retries: int = 3, base_delay: float = 1.0,
+           validate: Callable = None) -> Any:
+    """带指数退避的重试包装。失败后 1s, 2s, 4s 重试。
+
+    validate: 可选校验函数，返回 False 视为失败触发重试。
+    用于 client.call() 等吞掉异常返回 None 的场景。
+    """
+    for attempt in range(max_retries):
+        try:
+            result = fn()
+            if validate and not validate(result):
+                raise RuntimeError(f"validate failed: {result}")
+            return result
+        except Exception as e:
+            if attempt == max_retries - 1:
+                logger.error("mem0x: 操作失败（%d次重试已耗尽）: %s", max_retries, e)
+                return None
+            delay = base_delay * (2 ** attempt)
+            logger.warning("mem0x: 第%d次重试（%.1fs后）: %s", attempt + 1, delay, e)
+            time.sleep(delay)
 
 
 # ═══════════════════════════════════════════════════
@@ -253,7 +275,7 @@ class Mem0RemoteProvider(MemoryProvider):
             params = {"messages": content, "infer": True}
             if metadata:
                 params["metadata"] = metadata
-            client.call("add", params)
+            _retry(lambda: client.call("add", params), validate=lambda r: r is not None)
 
         _pool.submit(_write)
 
@@ -271,7 +293,7 @@ class Mem0RemoteProvider(MemoryProvider):
             content = "\n".join(
                 f"{m['role']}: {m.get('content', '')}" for m in recent
             )
-            client.call("add", {"messages": content, "infer": True})
+            _retry(lambda: client.call("add", {"messages": content, "infer": True}), validate=lambda r: r is not None)
 
         _pool.submit(_write)
         return None
@@ -283,11 +305,11 @@ class Mem0RemoteProvider(MemoryProvider):
 
         def _write():
             client = _get_client()
-            client.call("add", {
+            _retry(lambda: client.call("add", {
                 "messages": content,
                 "infer": True,
                 "metadata": {"source": "MEMORY.md", "action": action},
-            })
+            }), validate=lambda r: r is not None)
 
         _pool.submit(_write)
 

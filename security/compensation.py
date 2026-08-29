@@ -171,7 +171,7 @@ def _requeue(task: dict):
 
 
 def _bump_retry(task: dict):
-    """增加重试次数，超过上限则丢弃。"""
+    """增加重试次数，超过上限则丢弃（同时更新 SQLite 状态）。"""
     task["retries"] += 1
     if task["retries"] >= MAX_RETRIES:
         with _queue_lock:
@@ -179,10 +179,32 @@ def _bump_retry(task: dict):
                 _queue.remove(task)
             except ValueError:
                 pass
+        _persist_retry_state(task)
         logger.warning("补偿队列: 重试%d次后放弃, 内容前50字: %s", MAX_RETRIES, task["content"][:50])
     else:
         delay = min(BASE_DELAY * (2 ** task["retries"]), MAX_DELAY)
         task["next_retry_at"] = time.time() + delay
+        _persist_retry_state(task)
+
+
+def _persist_retry_state(task: dict):
+    """同步重试次数和下次重试时间到 SQLite（按 row_id 或 content 精确更新）。"""
+    try:
+        conn = get_db("compensation")
+        if task.get("row_id"):
+            conn.execute(
+                "UPDATE compensation_queue SET retries=?, next_retry_at=? WHERE id=?",
+                (task["retries"], task["next_retry_at"], task["row_id"]),
+            )
+        else:
+            conn.execute(
+                "UPDATE compensation_queue SET retries=?, next_retry_at=? WHERE content=? AND created_at=?",
+                (task["retries"], task["next_retry_at"], task["content"], task.get("created_at", 0)),
+            )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.debug("补偿队列重试状态持久化失败: %s", e)
 
 
 def start(write_fn: Callable = None, handlers: Optional[dict[str, Callable]] = None):

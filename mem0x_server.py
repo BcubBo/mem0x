@@ -1196,7 +1196,8 @@ async def expire_memories():
     同步清理 Qdrant。
     """
     start = time.time()
-    deleted = auto_expire.run_expire_cycle()
+    loop = asyncio.get_running_loop()
+    deleted = await loop.run_in_executor(None, auto_expire.run_expire_cycle)
     elapsed_ms = int((time.time() - start) * 1000)
     return {
         "deleted": deleted,

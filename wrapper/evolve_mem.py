@@ -277,8 +277,8 @@ def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
                         logger.info("本轮自进化: 清理 %d 条（%d 个用户）", total_pruned, len(user_ids))
             finally:
                 background_tasks_lock.release()
-        except Exception as e:
-            logger.error("evolve_mem 循环异常: %s", e)
+        except Exception:
+            logger.exception("evolve_mem 循环异常")
 
         time.sleep(interval)
 

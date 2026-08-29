@@ -241,8 +241,8 @@ def _background_loop(interval: int = DEFAULT_INTERVAL):
                 total_deleted += deleted
             if total_deleted > 0:
                 logger.info("本轮清理 %d 条过期记忆（%d 个用户）", total_deleted, len(user_ids))
-        except Exception as e:
-            logger.error("auto_expire 循环异常: %s", e)
+        except Exception:
+            logger.exception("auto_expire 循环异常")
         finally:
             try:
                 background_tasks_lock.release()

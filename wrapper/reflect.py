@@ -258,8 +258,8 @@ def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
                 real_issues = [i for i in issues if i != "系统运行正常"]
                 if real_issues:
                     logger.info("反思发现 %d 个问题", len(real_issues))
-        except Exception as e:
-            logger.error("reflect 循环异常: %s", e)
+        except Exception:
+            logger.exception("reflect 循环异常")
 
         time.sleep(interval)
 

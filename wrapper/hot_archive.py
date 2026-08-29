@@ -177,8 +177,8 @@ def _loop():
 
             # 等待下一轮（可中断）
             _stop_event.wait(timeout=interval)
-        except Exception as e:
-            logger.debug("hot_archive 循环异常: %s", e)
+        except Exception:
+            logger.exception("hot_archive 循环异常")
             _stop_event.wait(timeout=60)
 
     _running = False

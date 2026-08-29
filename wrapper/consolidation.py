@@ -952,8 +952,8 @@ def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
                         logger.info("本轮整合 %d 条记忆（%d 个用户）", total_merged, len(user_ids))
             finally:
                 background_tasks_lock.release()
-        except Exception as e:
-            logger.error("consolidation 循环异常: %s", e)
+        except Exception:
+            logger.exception("consolidation 循环异常")
 
         time.sleep(interval)
 

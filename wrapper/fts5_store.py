@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import sqlite3
+import threading
 import time
 from collections import Counter
 from typing import Any
@@ -59,75 +60,79 @@ class FTS5Store:
         self.search_limit = config["search_limit"]
         self.hot_words_min_len = config["hot_words_min_length"]
 
+        self._lock = threading.Lock()
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._create_tables()
 
     def _create_tables(self) -> None:
-        self._conn.executescript(
-            f"""
-            CREATE VIRTUAL TABLE IF NOT EXISTS fts5_memories USING fts5(
-                memory_id UNINDEXED,
-                content,
-                user_id UNINDEXED,
-                tokenize="{self.tokenizer}"
-            );
-            CREATE TABLE IF NOT EXISTS fts5_meta (
-                memory_id TEXT PRIMARY KEY,
-                user_id TEXT,
-                created_at REAL
-            );
-            CREATE TABLE IF NOT EXISTS fts5_query_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                query TEXT,
-                user_id TEXT,
-                result_count INTEGER,
-                elapsed_ms INTEGER,
-                created_at REAL
-            );
-            CREATE TABLE IF NOT EXISTS fts5_hot_words (
-                word TEXT PRIMARY KEY,
-                count INTEGER DEFAULT 1,
-                last_seen REAL
-            );
-            """
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.executescript(
+                f"""
+                CREATE VIRTUAL TABLE IF NOT EXISTS fts5_memories USING fts5(
+                    memory_id UNINDEXED,
+                    content,
+                    user_id UNINDEXED,
+                    tokenize="{self.tokenizer}"
+                );
+                CREATE TABLE IF NOT EXISTS fts5_meta (
+                    memory_id TEXT PRIMARY KEY,
+                    user_id TEXT,
+                    created_at REAL
+                );
+                CREATE TABLE IF NOT EXISTS fts5_query_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    query TEXT,
+                    user_id TEXT,
+                    result_count INTEGER,
+                    elapsed_ms INTEGER,
+                    created_at REAL
+                );
+                CREATE TABLE IF NOT EXISTS fts5_hot_words (
+                    word TEXT PRIMARY KEY,
+                    count INTEGER DEFAULT 1,
+                    last_seen REAL
+                );
+                """
+            )
+            self._conn.commit()
 
     # ── 写入 / 删除 ──
 
     def write(self, memory_id: str, content: str, user_id: str = "", metadata: str = "{}") -> None:
         now = time.time()
-        try:
-            self._conn.execute("BEGIN")
-            self._conn.execute(
-                "INSERT OR REPLACE INTO fts5_meta (memory_id, user_id, created_at) VALUES (?, ?, ?)",
-                (memory_id, user_id, now),
-            )
-            self._conn.execute("DELETE FROM fts5_memories WHERE memory_id = ?", (memory_id,))
-            self._conn.execute(
-                "INSERT INTO fts5_memories (memory_id, content, user_id) VALUES (?, ?, ?)",
-                (memory_id, content, user_id),
-            )
-            self._conn.execute("COMMIT")
-            logger.debug("FTS5 write: id=%s user=%s len=%d", memory_id[:12], user_id, len(content))
-        except Exception as e:
-            logger.warning("fts5 write failed, rolling back: %s", e)
-            self._conn.execute("ROLLBACK")
-            raise
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN")
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO fts5_meta (memory_id, user_id, created_at) VALUES (?, ?, ?)",
+                    (memory_id, user_id, now),
+                )
+                self._conn.execute("DELETE FROM fts5_memories WHERE memory_id = ?", (memory_id,))
+                self._conn.execute(
+                    "INSERT INTO fts5_memories (memory_id, content, user_id) VALUES (?, ?, ?)",
+                    (memory_id, content, user_id),
+                )
+                self._conn.execute("COMMIT")
+                logger.debug("FTS5 write: id=%s user=%s len=%d", memory_id[:12], user_id, len(content))
+            except Exception as e:
+                logger.warning("fts5 write failed, rolling back: %s", e)
+                self._conn.execute("ROLLBACK")
+                raise
 
     def delete(self, memory_id: str) -> None:
-        try:
-            self._conn.execute("BEGIN")
-            self._conn.execute("DELETE FROM fts5_memories WHERE memory_id = ?", (memory_id,))
-            self._conn.execute("DELETE FROM fts5_meta WHERE memory_id = ?", (memory_id,))
-            self._conn.execute("COMMIT")
-            logger.debug("FTS5 delete: id=%s", memory_id[:12])
-        except Exception as e:
-            logger.warning("fts5 delete failed, rolling back: %s", e)
-            self._conn.execute("ROLLBACK")
-            raise
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN")
+                self._conn.execute("DELETE FROM fts5_memories WHERE memory_id = ?", (memory_id,))
+                self._conn.execute("DELETE FROM fts5_meta WHERE memory_id = ?", (memory_id,))
+                self._conn.execute("COMMIT")
+                logger.debug("FTS5 delete: id=%s", memory_id[:12])
+            except Exception as e:
+                logger.warning("fts5 delete failed, rolling back: %s", e)
+                self._conn.execute("ROLLBACK")
+                raise
 
     # ── 搜索（短语 + 前缀 + 高亮）──
 
@@ -241,14 +246,15 @@ class FTS5Store:
     # ── 搜索历史日志 ──
 
     def _log_query(self, query: str, user_id: str, result_count: int, elapsed_ms: int) -> None:
-        try:
-            self._conn.execute(
-                "INSERT INTO fts5_query_log (query, user_id, result_count, elapsed_ms, created_at) VALUES (?, ?, ?, ?, ?)",
-                (query, user_id, result_count, elapsed_ms, time.time()),
-            )
-            self._conn.commit()
-        except Exception as e:
-            logger.debug("fts5 log query: %s", e)
+        with self._lock:
+            try:
+                self._conn.execute(
+                    "INSERT INTO fts5_query_log (query, user_id, result_count, elapsed_ms, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (query, user_id, result_count, elapsed_ms, time.time()),
+                )
+                self._conn.commit()
+            except Exception as e:
+                logger.debug("fts5 log query: %s", e)
 
     def get_query_history(self, user_id: str = "", limit: int = 20) -> list[dict]:
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
@@ -273,18 +279,19 @@ class FTS5Store:
     # ── 热词统计 ──
 
     def _update_hot_words(self, tokens: list[str]) -> None:
-        try:
-            now = time.time()
-            for word in tokens:
-                if len(word) >= self.hot_words_min_len:
-                    self._conn.execute(
-                        "INSERT INTO fts5_hot_words (word, count, last_seen) VALUES (?, 1, ?) "
-                        "ON CONFLICT(word) DO UPDATE SET count = count + 1, last_seen = ?",
-                        (word, now, now),
-                    )
-            self._conn.commit()
-        except Exception as e:
-            logger.debug("fts5 update hot words: %s", e)
+        with self._lock:
+            try:
+                now = time.time()
+                for word in tokens:
+                    if len(word) >= self.hot_words_min_len:
+                        self._conn.execute(
+                            "INSERT INTO fts5_hot_words (word, count, last_seen) VALUES (?, 1, ?) "
+                            "ON CONFLICT(word) DO UPDATE SET count = count + 1, last_seen = ?",
+                            (word, now, now),
+                        )
+                self._conn.commit()
+            except Exception as e:
+                logger.debug("fts5 update hot words: %s", e)
 
     def get_hot_words(self, limit: int = 20) -> list[dict]:
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
@@ -311,37 +318,39 @@ class FTS5Store:
     # ── 全量同步 ──
 
     def sync_from_qdrant(self, records: list[dict[str, Any]]) -> int:
-        now = time.time()
-        count = 0
-        for rec in records:
-            memory_id = rec.get("id", "")
-            content = str(rec.get("memory") or rec.get("content") or "")
-            meta = rec.get("metadata") or {}
-            user_id = meta.get("user_id", "") if isinstance(meta, dict) else ""
+        with self._lock:
+            now = time.time()
+            count = 0
+            for rec in records:
+                memory_id = rec.get("id", "")
+                content = str(rec.get("memory") or rec.get("content") or "")
+                meta = rec.get("metadata") or {}
+                user_id = meta.get("user_id", "") if isinstance(meta, dict) else ""
 
-            self._conn.execute("DELETE FROM fts5_memories WHERE memory_id = ?", (memory_id,))
-            self._conn.execute(
-                "INSERT INTO fts5_memories (memory_id, content, user_id) VALUES (?, ?, ?)",
-                (memory_id, content, user_id),
-            )
-            self._conn.execute(
-                "INSERT OR REPLACE INTO fts5_meta (memory_id, user_id, created_at) VALUES (?, ?, ?)",
-                (memory_id, user_id, now),
-            )
-            count += 1
-        self._conn.commit()
-        self._conn.execute("INSERT INTO fts5_memories(fts5_memories) VALUES('optimize')")
-        self._conn.commit()
-        return count
+                self._conn.execute("DELETE FROM fts5_memories WHERE memory_id = ?", (memory_id,))
+                self._conn.execute(
+                    "INSERT INTO fts5_memories (memory_id, content, user_id) VALUES (?, ?, ?)",
+                    (memory_id, content, user_id),
+                )
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO fts5_meta (memory_id, user_id, created_at) VALUES (?, ?, ?)",
+                    (memory_id, user_id, now),
+                )
+                count += 1
+            self._conn.commit()
+            self._conn.execute("INSERT INTO fts5_memories(fts5_memories) VALUES('optimize')")
+            self._conn.commit()
+            return count
 
     def count(self, user_id: str = "") -> int:
-        if user_id:
-            row = self._conn.execute(
-                "SELECT COUNT(*) FROM fts5_meta WHERE user_id = ?", (user_id,)
-            ).fetchone()
-        else:
-            row = self._conn.execute("SELECT COUNT(*) FROM fts5_meta").fetchone()
-        return row[0] if row else 0
+        with self._lock:
+            if user_id:
+                row = self._conn.execute(
+                    "SELECT COUNT(*) FROM fts5_meta WHERE user_id = ?", (user_id,)
+                ).fetchone()
+            else:
+                row = self._conn.execute("SELECT COUNT(*) FROM fts5_meta").fetchone()
+            return row[0] if row else 0
 
 
 # 单例

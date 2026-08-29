@@ -19,19 +19,18 @@ _nlp = None
 def _get_nlp():
     global _nlp
     if _nlp is None:
-        try:
-            import spacy
-            _nlp = spacy.load("zh_core_web_sm")
-            logger.info("spaCy 中文模型加载成功")
-        except Exception as e:
-            logger.debug("spaCy zh model load failed: %s", e)
+        import spacy
+        # 优先加载 Transformer 模型（NER F1=74%），回退到 sm（~50%）
+        for model in ["zh_core_web_trf", "zh_core_web_sm", "en_core_web_sm"]:
             try:
-                import spacy
-                _nlp = spacy.load("en_core_web_sm")
-                logger.warning("中文模型不可用，降级到英文模型")
-            except Exception as e:
-                logger.warning("spaCy 模型加载失败: %s", e)
-                _nlp = False
+                _nlp = spacy.load(model)
+                logger.info("spaCy 模型加载成功: %s", model)
+                break
+            except Exception:
+                continue
+        else:
+            logger.warning("所有 spaCy 模型加载失败")
+            _nlp = False
     return _nlp if _nlp is not False else None
 
 

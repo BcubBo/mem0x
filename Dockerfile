@@ -6,17 +6,14 @@ RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.li
 WORKDIR /app
 
 COPY requirements.txt .
-# 降级 numpy 兼容 spacy-pkuseg
-RUN pip install --no-cache-dir -r requirements.txt && \
+# 先装 torch CPU 版（trf 模型依赖），再装其他依赖
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir "numpy>=1.26,<2.0"
 
-# spaCy 英文模型（tar 解压）
-COPY en_core_web_sm-3.8.0.tar.gz /tmp/
-RUN tar xzf /tmp/en_core_web_sm-3.8.0.tar.gz -C /usr/local/lib/python3.12/site-packages/ && rm -rf /tmp/*.tar.gz
-
-# spaCy 中文模型（pip install tar.gz，自动处理路径）
-COPY zh_core_web_sm-3.8.0.tar.gz /tmp/
-RUN pip install --no-cache-dir /tmp/zh_core_web_sm-3.8.0.tar.gz && rm -rf /tmp/*.tar.gz
+# spaCy 中文 Transformer 模型（bert-base-chinese，NER 准确率 74%）
+COPY zh_core_web_trf-3.8.0.tar.gz /tmp/
+RUN pip install --no-cache-dir /tmp/zh_core_web_trf-3.8.0.tar.gz && rm -rf /tmp/*.tar.gz
 
 COPY wrapper/ ./wrapper/
 COPY security/ ./security/

@@ -40,6 +40,7 @@ _DEFAULT_CONFIG = {"enabled": True, "default_ttl_days": 90, "injection_weight": 
 
 # ── Redis cache state ───────────────────────────────────────
 _redis_pool = None
+_redis_client = None
 _redis_unavailable = False
 _redis_fail_time: float = 0
 _REDIS_RETRY_INTERVAL = 30  # seconds
@@ -56,15 +57,15 @@ def _get_config() -> dict:
 
 
 def _get_redis():
-    """获取 Redis 连接（ConnectionPool + 30s 重试 + 自动降级）。"""
-    global _redis_pool, _redis_unavailable, _redis_fail_time
+    """获取 Redis 连接（ConnectionPool 单例 + 30s 重试 + 自动降级）。"""
+    global _redis_pool, _redis_client, _redis_unavailable, _redis_fail_time
 
     cfg = _get_config()
     if not cfg.get("redis_cache", False):
         return None
 
-    if _redis_pool is not None:
-        return _redis_pool
+    if _redis_client is not None:
+        return _redis_client
 
     if _redis_unavailable:
         if time.time() - _redis_fail_time < _REDIS_RETRY_INTERVAL:
@@ -82,29 +83,24 @@ def _get_redis():
             host=host, port=port, db=db,
             decode_responses=True,
             socket_timeout=2, socket_connect_timeout=2,
+            max_connections=10,
         )
-        r = _redis_mod.Redis(connection_pool=_redis_pool)
-        r.ping()
+        _redis_client = _redis_mod.Redis(connection_pool=_redis_pool)
+        _redis_client.ping()
         logger.info("working_memory redis connected: %s:%s db=%s", host, port, db)
-        return _redis_pool
+        return _redis_client
     except Exception as e:
         logger.warning("working_memory redis connect: %s, fallback to sqlite", e)
         _redis_pool = None
+        _redis_client = None
         _redis_unavailable = True
         _redis_fail_time = time.time()
         return None
 
 
 def _redis_conn():
-    """从 ConnectionPool 获取连接，失败返回 None。"""
-    pool = _get_redis()
-    if pool is None:
-        return None
-    try:
-        import redis as _redis_mod
-        return _redis_mod.Redis(connection_pool=pool)
-    except Exception:
-        return None
+    """获取 Redis 客户端单例，失败返回 None。"""
+    return _get_redis()
 
 
 def _key_item(memory_id: str) -> str:
@@ -171,6 +167,7 @@ def add(
 
     # Redis cache write
     r = _redis_conn()
+    redis_written = False
     if r:
         try:
             ttl_sec = ttl_days * 86400 + 86400
@@ -189,6 +186,7 @@ def add(
                 pipe.expire(_key_user(user_id), ttl_sec)
                 pipe.incr(_key_count())
                 pipe.execute()
+            redis_written = True
         except Exception as e:
             logger.debug("working_memory redis add: %s", e)
 
@@ -206,6 +204,17 @@ def add(
         return True
     except Exception as e:
         logger.debug("working_memory add 失败: %s", e)
+        # SQLite 写入失败，回滚 Redis 以保持一致性
+        if redis_written and r:
+            try:
+                with r.pipeline() as pipe:
+                    pipe.delete(_key_item(memory_id))
+                    pipe.srem(_key_user(user_id), memory_id)
+                    pipe.decr(_key_count())
+                    pipe.execute()
+                logger.info("working_memory add: Redis rollback ok for mid=%s", memory_id[:16])
+            except Exception as rb_e:
+                logger.warning("working_memory add Redis rollback 失败: %s", rb_e)
         return False
     finally:
         conn.close()

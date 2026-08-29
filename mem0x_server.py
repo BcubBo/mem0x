@@ -1175,6 +1175,16 @@ async def get_degradation():
     }
 
 
+@app.post("/reload-config", dependencies=[Depends(verify_api_key)])
+async def reload_config():
+    """热更新配置（重置配置缓存 + mem0 单例）。"""
+    from wrapper.mem0_runtime import reset_config_cache, reset_memory_singleton
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, reset_memory_singleton)
+    logger.info("配置已热更新")
+    return {"status": "ok", "message": "Config reloaded. Memory singleton will reinitialize on next request."}
+
+
 @app.get("/compensation/dead", dependencies=[Depends(verify_api_key), Depends(rate_limit)])
 async def get_compensation_dead(limit: int = 50):
     """查询补偿队列中已放弃的任务（重试耗尽）。"""

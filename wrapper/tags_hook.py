@@ -1,6 +1,7 @@
 """tags_hook.py — spaCy NER tags 统一管理 hook。
 
 add/update 时提取实体写入 Qdrant payload tags，
+同时推送带类型的实体到 NER 训练缓冲区。
 delete 时清理 tags。
 """
 
@@ -11,10 +12,13 @@ logger = logging.getLogger("tags_hook")
 
 
 def _extract_and_setTags(memory, memory_id: str, content: str) -> None:
-    """从内容提取 tags 并写入 Qdrant payload。"""
+    """从内容提取 tags 并写入 Qdrant payload，同时推入 NER 训练缓冲区。"""
     try:
-        from wrapper.spacy_ner import extract_tags
-        tags = extract_tags(content)
+        from wrapper.spacy_ner import extract_tags_with_types
+        typed_entities = extract_tags_with_types(content)
+        tags = [e["text"] for e in typed_entities]
+
+        # 写入 Qdrant payload
         qc = memory.vector_store.client
         collection = getattr(memory, "collection_name", "mem0")
         if tags:
@@ -22,6 +26,14 @@ def _extract_and_setTags(memory, memory_id: str, content: str) -> None:
             logger.debug("tags_hook: id=%s metadata.tags=%s", memory_id[:12], tags)
         else:
             qc.set_payload(collection, payload={"metadata": {"tags": []}}, points=[memory_id])
+
+        # 推入 NER 训练缓冲区（阶段1：数据采集）
+        if typed_entities:
+            try:
+                from wrapper.ner_buffer import get_buffer
+                get_buffer().push(content, typed_entities)
+            except Exception as e:
+                logger.debug("ner_buffer push 失败: %s", e)
     except Exception as e:
         logger.debug("tags_hook set 失败: %s", e)
 

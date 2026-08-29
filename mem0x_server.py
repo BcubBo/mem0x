@@ -176,6 +176,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("hot_archive 启动失败: %s", e)
 
+    # 启动 NER 训练管线后台线程
+    try:
+        from wrapper.ner_pipeline import start as ner_pipeline_start
+        ner_cfg = config.get("ner_pipeline", {})
+        ner_interval = ner_cfg.get("interval", 120)
+        ner_pipeline_start(get_memory, interval=ner_interval)
+        logger.info("ner_pipeline 已启动 (interval=%ds)", ner_interval)
+    except Exception as e:
+        logger.warning("ner_pipeline 启动失败: %s", e)
+
     # 启动 reconcile 对账后台线程
     try:
         reconcile.start_reconcile_thread()
@@ -204,6 +214,11 @@ async def lifespan(app: FastAPI):
     evolve_mem.stop()
     reflect.stop()
     hot_archive.stop()
+    try:
+        from wrapper.ner_pipeline import stop as ner_pipeline_stop
+        ner_pipeline_stop()
+    except Exception:
+        pass
     reconcile.stop()
     from wrapper.fts5_store import close_fts5
     close_fts5()

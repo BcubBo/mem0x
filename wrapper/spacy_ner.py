@@ -53,5 +53,27 @@ def extract_tags(content: str, top_n: int = 10) -> list[str]:
         return []
 
 
+def extract_tags_with_types(content: str, top_n: int = 10) -> list[dict[str, str]]:
+    """提取实体并返回 text + label（供训练缓冲区使用）。"""
+    nlp = _get_nlp()
+    if nlp is None:
+        return []
+    try:
+        doc = nlp(content[:10000])
+        seen = set()
+        results = []
+        for ent in doc.ents:
+            t = ent.text.strip()
+            if len(t) < 2 or t.lower() in _STOP_ENTITIES:
+                continue
+            if t not in seen:
+                seen.add(t)
+                results.append({"text": t, "label": ent.label_})
+        return results[:top_n]
+    except Exception as e:
+        logger.debug("spaCy NER (with types) 失败: %s", e)
+        return []
+
+
 def is_available() -> bool:
     return _get_nlp() is not None

@@ -18,10 +18,10 @@ def _extract_and_setTags(memory, memory_id: str, content: str) -> None:
         qc = memory.vector_store.client
         collection = getattr(memory, "collection_name", "mem0")
         if tags:
-            qc.set_payload(collection, payload={"tags": tags}, points=[memory_id])
-            logger.debug("tags_hook: id=%s tags=%s", memory_id[:12], tags)
+            qc.set_payload(collection, payload={"metadata": {"tags": tags}}, points=[memory_id])
+            logger.debug("tags_hook: id=%s metadata.tags=%s", memory_id[:12], tags)
         else:
-            qc.set_payload(collection, payload={"tags": []}, points=[memory_id])
+            qc.set_payload(collection, payload={"metadata": {"tags": []}}, points=[memory_id])
     except Exception as e:
         logger.debug("tags_hook set 失败: %s", e)
 
@@ -31,7 +31,7 @@ def _clear_tags(memory, memory_id: str) -> None:
     try:
         qc = memory.vector_store.client
         collection = getattr(memory, "collection_name", "mem0")
-        qc.set_payload(collection, payload={"tags": []}, points=[memory_id])
+        qc.set_payload(collection, payload={"metadata": {"tags": []}}, points=[memory_id])
     except Exception as e:
         logger.debug("tags_hook clear 失败: %s", e)
 

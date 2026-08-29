@@ -1676,6 +1676,8 @@ async def unified_endpoint(req: UnifiedRequest, request: Request):
             before=params.get("before"),
             after=params.get("after"),
             include_archived=params.get("include_archived", False),
+            tags=params.get("tags"),
+            tags_match=params.get("tags_match", "any"),
         )
         return await search_memory(search_req, request)
 

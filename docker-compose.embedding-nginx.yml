@@ -1,0 +1,50 @@
+networks:
+  mem0x-net:
+    external: true
+services:
+  embedding:
+    container_name: mem0x-embedding
+    environment:
+      EMBEDDING_MODEL: BAAI/bge-m3
+      EMBEDDING_MODEL_PATH: /app/models/BAAI/bge-m3
+      PORT: '28770'
+      WORKERS: '16'
+    image: mem0x-embedding:latest
+    mem_limit: 2.5g
+    networks:
+    - mem0x-net
+    restart: unless-stopped
+    volumes:
+    - /home/ubuntu/workspace/.mem0x/data/fastembed/bge-m3:/app/models/BAAI/bge-m3:ro
+
+  reranker:
+    container_name: mem0x-reranker-n1
+    image: mem0x-reranker:latest
+    restart: unless-stopped
+    mem_limit: 2g
+    volumes:
+    - /home/ubuntu/workspace/.mem0x/data/models/BAAI/bge-reranker-v2-m3:/app/models/BAAI/bge-reranker-v2-m3:ro
+    environment:
+      RERANKER_MODEL_PATH: "/app/models/BAAI/bge-reranker-v2-m3"
+      PORT: "8790"
+      WORKERS: "16"
+    networks:
+    - mem0x-net
+
+  nginx:
+    build: /home/ubuntu/workspace/.mem0x/embedding-nginx
+    container_name: mem0x-gateway-nginx
+    depends_on:
+    - embedding
+    - reranker
+    networks:
+    - mem0x-net
+    ports:
+    - 127.0.0.1:28770:28770
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:28770/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3

@@ -1,0 +1,23 @@
+# Reranker 服务（单节点 16 workers）
+# 启动: sudo docker compose -f docker-compose.reranker.yml up -d
+
+services:
+  n1:
+    image: mem0x-reranker:latest
+    container_name: mem0x-reranker-n1
+    restart: unless-stopped
+    mem_limit: 2g
+    ports:
+      - "127.0.0.1:28795:8790"
+    volumes:
+      - /home/ubuntu/workspace/.mem0x/data/models/BAAI/bge-reranker-v2-m3:/app/models/BAAI/bge-reranker-v2-m3:ro
+    environment:
+      RERANKER_MODEL_PATH: "/app/models/BAAI/bge-reranker-v2-m3"
+      PORT: "8790"
+      WORKERS: "16"
+    networks:
+      - mem0x-net
+
+networks:
+  mem0x-net:
+    external: true

@@ -1,0 +1,140 @@
+{
+  "mem0": {
+    "llm": {
+      "provider": "openai",
+      "config": {
+        "model": "mimo-v2.5-pro",
+        "api_key": "tp-cep8uynr0d4gua6k11gok93m5j79w75pbvra9zkjtx4cku1k",
+        "openai_base_url": "https://token-plan-cn.xiaomimimo.com/v1",
+        "max_tokens": 5000
+      }
+    },
+    "embedder": {
+      "provider": "openai",
+      "config": {
+        "model": "BAAI/bge-m3",
+        "api_key": "not-needed",
+        "openai_base_url": "http://mem0x-gateway-nginx:28770/v1"
+      }
+    },
+    "vector_store": {
+      "provider": "qdrant",
+      "config": {
+        "url": "http://qdrant:6333",
+        "api_key": "b16f7b9fbc154285906a69e9438fcafdb5c70b397fa07678169a0b127d2cecb4",
+        "embedding_model_dims": 1024,
+        "collection_name": "mem0"
+      }
+    },
+    "custom_instructions": "【中文技术对话事实提取规则】\n\n每条fact必须以标签开头，格式为：[优先级][分类][lane:过期策略] 事实内容\n\n优先级：[P0]技术决策 [P1]项目教训 [P2]偏好人物\n分类：[tech]技术 [preference]偏好 [person]人物 [project]项目 [lesson]教训\nLane：[lane:identity]永不衰减 [lane:project]180天 [lane:default]30天\n\n实体标注：@fmj-color @LAS @gw @openclaw @hermes @飞书\n\n示例：\n输入：端口是28767\n输出：{\"facts\": [\"[P0][tech][lane:project] @hermes 端口28767\"]}\n\n输入：我叫张三，是程序员\n输出：{\"facts\": [\"[P2][person][lane:identity] 用户叫张三，程序员\"]}\n\n不要提取：临时操作步骤、寒暄确认、工具输出原文\n"
+  },
+  "rerank": {
+    "provider": "openai_compatible",
+    "config": {
+      "model": "BAAI/bge-reranker-v2-m3",
+      "api_key": "not-needed",
+      "openai_base_url": "http://mem0x-gateway-nginx:28770/v1"
+    }
+  },
+  "server": {
+    "host": "0.0.0.0",
+    "port": 28768,
+    "api_key": "e2e01e109edc79a3932f1583ec884122564b203f1dd5584bd15ae6d5052e2c21"
+  },
+  "scoring": {
+    "weights": {
+      "vector": 0.38,
+      "time": 0.15,
+      "reliability": 0.1,
+      "heat": 0.17,
+      "confidence": 0.2
+    },
+    "recency_lambda": 0.05,
+    "rerank_weight": 0.4,
+    "salience_weight": 0.15
+  },
+  "search": {
+    "top_k": 50,
+    "threshold": 0.05
+  },
+  "salience": {
+    "initial_value": 0.5,
+    "access_boost": 0.1,
+    "decay_rate": 0.023
+  },
+  "dedup": {
+    "merge_threshold": 0.85,
+    "update_threshold": 0.7
+  },
+  "data_dir": "data",
+  "redact_names": {
+    "何博洋": "bo"
+  },
+  "known_persons": [
+    "bo",
+    "龙崎"
+  ],
+  "consolidation": {
+    "llm": {
+      "provider": "openai",
+      "config": {
+        "model": "mimo-v2.5",
+        "api_key": "tp-cep8uynr0d4gua6k11gok93m5j79w75pbvra9zkjtx4cku1k",
+        "openai_base_url": "https://token-plan-cn.xiaomimimo.com/v1"
+      }
+    },
+    "cursor": {
+      "max_candidates": 2000,
+      "interval": 7200,
+      "ttl_days": 30,
+      "exact_dup_threshold": 0.95,
+      "near_dup_threshold": 0.88,
+      "jaccard_threshold": 0.45,
+      "vector_sim_threshold": 0.82
+    }
+  },
+  "conflict": {
+    "llm": {
+      "provider": "xiaomi",
+      "config": {
+        "model": "mimo-v2.5-pro",
+        "api_key": "tp-cep8uynr0d4gua6k11gok93m5j79w75pbvra9zkjtx4cku1k",
+        "openai_base_url": "https://token-plan-cn.xiaomimimo.com/v1",
+        "base_url": "https://token-plan-cn.xiaomimimo.com/v1",
+        "max_tokens": 5000,
+        "max_llm_calls": 1,
+        "num_votes": 2
+      }
+    },
+    "auto_archive_threshold": 0.8,
+    "notify_threshold": 0.5
+  },
+  "redis": {
+    "host": "redis",
+    "port": 6379,
+    "db": 0
+  },
+  "evolve_mem": {
+    "interval": 14400,
+    "threshold_high": 0.7,
+    "threshold_low": 0.3
+  },
+  "fts5": {
+    "db_path": "data/fts5.db",
+    "tokenizer": "unicode61",
+    "bm25_weight": 0.3,
+    "highlight": true,
+    "hot_words": true,
+    "query_log": true,
+    "extract_tags": true,
+    "search_limit": 20,
+    "hot_words_min_length": 2
+  },
+  "working_memory": {
+    "enabled": true,
+    "default_ttl_days": 90,
+    "injection_weight": 1.5,
+    "redis_cache": true,
+    "db_wm": 1
+  }
+}

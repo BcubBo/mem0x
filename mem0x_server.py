@@ -219,6 +219,12 @@ app = FastAPI(
 
 
 # ═══════════════════════════════════════════════════
+# 并发控制：端点信号量
+# ═══════════════════════════════════════════════════
+_endpoint_semaphore = asyncio.Semaphore(50)
+
+
+# ═══════════════════════════════════════════════════
 # Helper functions
 # ═══════════════════════════════════════════════════
 
@@ -230,15 +236,16 @@ async def _update_usage_stats_sync(memory_instance, memory_ids: list):
     if not valid_ids:
         return
 
-    # 并发获取（限制最多3个同时请求，避免Qdrant scroll风暴）
-    sem = asyncio.Semaphore(3)
+    _qdrant_sem = asyncio.Semaphore(3)
+
     async def _get_meta(mid):
-        try:
-            existing = await memory_instance.get(mid)
-            return mid, existing.get("metadata", {}) if existing else {}
-        except Exception as e:
-            logger.warning("get_memory metadata failed for %s: %s", mid, e)
-            return mid, {}
+        async with _qdrant_sem:
+            try:
+                existing = await memory_instance.get(mid)
+                return mid, existing.get("metadata", {}) if existing else {}
+            except Exception as e:
+                logger.warning("get_memory metadata failed for %s: %s", mid, e)
+                return mid, {}
 
     results = await asyncio.gather(*[_get_meta(mid) for mid in valid_ids])
 
@@ -562,6 +569,11 @@ async def add_memory(req: AddRequest, request: Request):
     链路：注入防御 → PII脱敏 → 去重 → 矛盾消解 → 语义判重 → 写入
     user_id 优先级：请求头 X-User-ID > 请求体 user_id > 默认 "bo"
     """
+    async with _endpoint_semaphore:
+        return await _add_memory_impl(req, request)
+
+
+async def _add_memory_impl(req: AddRequest, request: Request):
     memory = get_memory()
     start = time.time()
 
@@ -652,6 +664,11 @@ async def search_memory(req: SearchRequest, request: Request):
     链路：向量检索 → 5维打分 → rerank → salience boost
     user_id 优先级：请求头 X-User-ID > 请求体 user_id > 默认 "bo"
     """
+    async with _endpoint_semaphore:
+        return await _search_memory_impl(req, request)
+
+
+async def _search_memory_impl(req: SearchRequest, request: Request):
     memory = get_memory()
     start = time.time()
 
@@ -944,9 +961,14 @@ async def _qdrant_retry(coro_factory, *, retries: int = 3, base_delay: float = 0
 @app.post("/delete", dependencies=[Depends(verify_api_key), Depends(rate_limit)])
 async def delete_memory(req: DeleteRequest, request: Request):
     """软删除记忆。搜索时过滤，数据仍保留可恢复。"""
+    async with _endpoint_semaphore:
+        return await _delete_memory_impl(req, request)
+
+
+async def _delete_memory_impl(req: DeleteRequest, request: Request):
     import re
     from datetime import datetime, timezone
-    
+
     logger.info("🗑️ delete: memory_id=%s", req.memory_id)
     
     # 1. 格式校验
@@ -1059,6 +1081,11 @@ async def update_memory(req: UpdateRequest, request: Request):
 
     安全链路：注入防御 → PII 脱敏 → 更新
     """
+    async with _endpoint_semaphore:
+        return await _update_memory_impl(req, request)
+
+
+async def _update_memory_impl(req: UpdateRequest, request: Request):
     from security.pipeline import redact_pii
     from security.injection_guard import validate_memory_content
 

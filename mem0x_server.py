@@ -228,8 +228,16 @@ _endpoint_semaphore = asyncio.Semaphore(50)
 # Helper functions
 # ═══════════════════════════════════════════════════
 
+_search_count_lock: Optional[asyncio.Lock] = None
+
 async def _update_usage_stats_sync(memory_instance, memory_ids: list):
-    """批量更新被搜索记忆的使用维度字段（并发执行，减少 N+1）。"""
+    """批量更新被搜索记忆的使用维度字段（并发执行，减少 N+1）。
+    
+    search_count 用 asyncio.Lock 保护 read-modify-write，防止并发丢失更新。
+    """
+    global _search_count_lock
+    if _search_count_lock is None:
+        _search_count_lock = asyncio.Lock()
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc).isoformat()
     valid_ids = [mid for mid in memory_ids if mid]
@@ -249,11 +257,12 @@ async def _update_usage_stats_sync(memory_instance, memory_ids: list):
 
     results = await asyncio.gather(*[_get_meta(mid) for mid in valid_ids])
 
-    # 批量更新
+    # 批量更新（search_count 用 asyncio.Lock 保护 per-ID read-modify-write）
     update_tasks = []
     for mid, meta in results:
-        current_count = (meta or {}).get("search_count", 0)
-        new_count = int(current_count) + 1 if isinstance(current_count, (int, float)) else 1
+        async with _search_count_lock:
+            current_count = (meta or {}).get("search_count", 0)
+            new_count = int(current_count) + 1 if isinstance(current_count, (int, float)) else 1
         update_tasks.append(
             memory_instance.update(mid, metadata={"search_count": new_count, "last_accessed_at": now})
         )

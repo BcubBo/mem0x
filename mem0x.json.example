@@ -1,5 +1,11 @@
 {
   "service_url": "http://127.0.0.1:28768",
   "user_id": "your-user-id",
-  "agent_id": "your-agent-id"
+  "agent_id": "your-agent-id",
+  "timeout": {
+    "add": 30,
+    "search": 10,
+    "delete": 10,
+    "update": 30
+  }
 }

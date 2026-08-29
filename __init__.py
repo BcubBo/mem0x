@@ -129,11 +129,20 @@ def _get_agent_id() -> str:
     return _load_config().get("agent_id", "hermes")
 
 
+_DEFAULT_TIMEOUTS = {
+    "add": 30.0,
+    "search": 10.0,
+    "delete": 10.0,
+    "update": 30.0,
+}
+
+
 def _get_timeout(operation: str = "add") -> float:
-    """从配置读取超时时间（秒）。"""
+    """从配置读取超时时间（秒），未配置时按 operation 给合理默认值。"""
     cfg = _load_config()
     timeouts = cfg.get("timeout", {})
-    return timeouts.get(operation, 300.0)  # 默认300秒
+    default = _DEFAULT_TIMEOUTS.get(operation, 30.0)
+    return timeouts.get(operation, default)
 
 
 def _get_sender_metadata() -> dict:

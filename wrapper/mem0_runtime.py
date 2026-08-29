@@ -195,7 +195,7 @@ def _rerank_openai_compatible(
         "Content-Type": "application/json",
     }
 
-    resp = req.post(url, json=payload, headers=headers, timeout=10)
+    resp = req.post(url, json=payload, headers=headers, timeout=60)
     resp.raise_for_status()
     data = resp.json()
 
@@ -226,7 +226,7 @@ def _rerank_jina(
         "Content-Type": "application/json",
     }
 
-    resp = req.post(url, json=payload, headers=headers, timeout=10)
+    resp = req.post(url, json=payload, headers=headers, timeout=60)
     resp.raise_for_status()
     data = resp.json()
 
@@ -257,7 +257,7 @@ def _rerank_cohere(
         "Content-Type": "application/json",
     }
 
-    resp = req.post(url, json=payload, headers=headers, timeout=10)
+    resp = req.post(url, json=payload, headers=headers, timeout=60)
     resp.raise_for_status()
     data = resp.json()
 

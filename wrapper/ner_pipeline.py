@@ -1,13 +1,14 @@
-"""NER 训练管线 — 后台线程，周期性采集 → 标注 → 持久化。
+"""NER 训练管线 — 后台线程，周期性采集 → 标注 → 持久化 → 训练。
 
 训练管线架构（5层）：
   ① 数据采集层 — ner_buffer（tags_hook push）
-  ② 弱监督标注层 — ner_labeler（规则 + spaCy 银标签）  ← 本模块协调
-  ③ 训练层 — nlp.update() 增量训练（阶段2）
-  ④ 模型管理层 — 版本控制 + 原子替换（阶段2）
-  ⑤ 推理层 — spacy_ner.py 从 registry 加载（阶段2）
+  ② 弱监督标注层 — ner_labeler（规则 + spaCy 银标签）
+  ③ 训练层 — nlp.update() 增量训练，产出到 data/ner_models/  ← 阶段2a
+  ④ 模型管理层 — 版本控制 + 原子替换（阶段2b/2c）
+  ⑤ 推理层 — spacy_ner.py 从 registry 加载（阶段2c）
 
-本模块实现 ①+② 的编排：drain buffer → label → 存入训练数据 SQLite。
+本模块实现 ①+②+③ 的编排：drain buffer → label → 存入 SQLite → 满足条件时触发训练。
+训练产出模型文件到 data/ner_models/，不修改推理层 spacy_ner.py。
 """
 
 import json
@@ -122,9 +123,14 @@ def _get_store() -> NERTrainingStore:
 
 
 def _pipeline_loop(get_memory_fn, interval: int = 120) -> None:
-    """后台循环：drain → label → save。"""
+    """后台循环：drain → label → save → train（满足条件时）。"""
     global _running
     logger.info("ner_pipeline 启动 (interval=%ds)", interval)
+
+    from wrapper.ner_trainer import get_trainer
+    trainer = get_trainer()
+    train_interval = interval * 5  # 训练检查间隔 = 5倍采集间隔
+    last_train_check = 0.0
 
     while _running:
         try:
@@ -151,10 +157,43 @@ def _pipeline_loop(get_memory_fn, interval: int = 120) -> None:
                     "ner_pipeline: drain=%d labeled=%d saved=%d total_db=%d",
                     len(raw_samples), len(labeled), saved, store.count(),
                 )
+
+            # 训练检查（不每次循环都检查，按 train_interval 间隔）
+            now = time.time()
+            if now - last_train_check >= train_interval:
+                last_train_check = now
+                total = store.count() if labeled else _get_store().count()
+                if trainer.should_train(total):
+                    logger.info("触发训练: total_samples=%d", total)
+                    # 从 SQLite 加载全部样本用于训练
+                    all_samples = _load_all_samples()
+                    if all_samples:
+                        meta = trainer.train(all_samples)
+                        if meta:
+                            logger.info(
+                                "训练完成: version=%s f1=%.3f path=%s",
+                                meta["version"], meta["f1"], meta["model_path"],
+                            )
+                        else:
+                            logger.info("训练未产出模型（F1不足或样本质量不够）")
+
         except Exception as e:
             logger.warning("ner_pipeline 循环异常: %s", e)
 
         time.sleep(interval)
+
+
+def _load_all_samples() -> list[dict]:
+    """从 SQLite 加载全部训练样本（供训练器使用）。"""
+    store = _get_store()
+    with store._lock:
+        rows = store._conn.execute(
+            "SELECT text, entities_json FROM ner_samples"
+        ).fetchall()
+    return [
+        {"text": r[0], "entities": json.loads(r[1])}
+        for r in rows
+    ]
 
 
 def start(get_memory_fn, interval: int = 120) -> None:
@@ -194,8 +233,25 @@ def get_stats() -> dict:
         store_count = _get_store().count()
     except Exception:
         pass
+
+    # 训练器状态
+    training_info = {}
+    try:
+        from wrapper.ner_trainer import get_trainer
+        latest = get_trainer().get_latest_model()
+        if latest:
+            training_info = {
+                "latest_version": latest.get("version"),
+                "latest_f1": latest.get("f1"),
+                "latest_model_path": latest.get("model_path"),
+                "model_count": len(get_trainer().list_models()),
+            }
+    except Exception:
+        pass
+
     return {
         "running": _running,
         "buffer": get_buffer().stats,
         "training_samples": store_count,
+        "training": training_info,
     }

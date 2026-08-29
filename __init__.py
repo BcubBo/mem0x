@@ -95,12 +95,13 @@ class _Client:
             return json.loads(resp.read().decode())
 
     def call(self, action: str, params: dict = None,
-             timeout: float = None) -> Optional[Any]:
+             timeout: float = None, extra_headers: dict = None) -> Optional[Any]:
         """统一 API 调用。通过 POST /api 发送，自动注入所有 header。"""
         if timeout is None:
             timeout = _get_timeout(action)
         body = {"action": action, "params": params or {}}
-        return self.try_request("POST", "/api", body=body, timeout=timeout)
+        return self.try_request("POST", "/api", body=body, timeout=timeout,
+                                headers=self._build_headers(extra_headers))
 
     def try_request(self, method: str, path: str, **kwargs) -> Optional[Any]:
         """失败返回 None，不让对话崩。"""
@@ -246,7 +247,9 @@ class Mem0RemoteProvider(MemoryProvider):
     def prefetch(self, query: str, session_id: str = "", **kwargs) -> str:
         """预取记忆（注入 system prompt）。包含向量检索 + Neo4j 图谱联想。"""
         client = _get_client()
-        result = client.call("search", {"query": query, "limit": 8, "rerank": True})
+        extra = {"X-Session-ID": session_id} if session_id else None
+        result = client.call("search", {"query": query, "limit": 8, "rerank": True},
+                             extra_headers=extra)
         if not result:
             return ""
 
@@ -275,7 +278,9 @@ class Mem0RemoteProvider(MemoryProvider):
             params = {"messages": content, "infer": True}
             if metadata:
                 params["metadata"] = metadata
-            _retry(lambda: client.call("add", params), validate=lambda r: r is not None)
+            extra = {"X-Session-ID": session_id} if session_id else None
+            _retry(lambda: client.call("add", params, extra_headers=extra),
+                   validate=lambda r: r is not None)
 
         _pool.submit(_write)
 

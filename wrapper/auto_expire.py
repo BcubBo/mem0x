@@ -217,6 +217,7 @@ def _background_loop(interval: int = DEFAULT_INTERVAL):
     logger.info("auto_expire 后台线程启动，间隔 %ds", interval)
 
     from wrapper.evolve_lock import background_tasks_lock
+    _loop = asyncio.new_event_loop()
 
     while _running:
         try:
@@ -230,7 +231,7 @@ def _background_loop(interval: int = DEFAULT_INTERVAL):
                 from wrapper.mem0_runtime import get_memory
                 from wrapper.fetch_all import get_distinct_user_ids
                 memory = get_memory()
-                user_ids = asyncio.run(get_distinct_user_ids(memory))
+                user_ids = _loop.run_until_complete(get_distinct_user_ids(memory))
             except Exception as e:
                 logger.debug("auto_expire get user_ids: %s", e)
                 user_ids = ["bo"]  # fallback
@@ -251,6 +252,7 @@ def _background_loop(interval: int = DEFAULT_INTERVAL):
 
         time.sleep(interval)
 
+    _loop.close()
     logger.info("auto_expire 后台线程已停止")
 
 

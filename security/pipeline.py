@@ -188,7 +188,10 @@ async def safe_add(
             )
             results = result.get("results", []) if isinstance(result, dict) else []
             memory_id = results[0].get("id") if results else None
-            logger.info("✅ pipeline.added_after_conflict: memory_id=%s", memory_id)
+            if memory_id:
+                logger.info("✅ pipeline.added_after_conflict: memory_id=%s", memory_id)
+            else:
+                logger.info("⏭️ pipeline.skipped_by_mem0_dedup (after conflict)")
             # FTS5 双写：新增记忆同步到 FTS5
             if memory_id:
                 try:
@@ -241,7 +244,10 @@ async def safe_add(
         )
         results = result.get("results", []) if isinstance(result, dict) else []
         memory_id = results[0].get("id") if results else None
-        logger.info("✅ pipeline.added: memory_id=%s", memory_id)
+        if memory_id:
+            logger.info("✅ pipeline.added: memory_id=%s", memory_id)
+        else:
+            logger.info("⏭️ pipeline.skipped_by_mem0_dedup")
         # FTS5 双写：新增记忆同步到 FTS5
         if memory_id:
             try:

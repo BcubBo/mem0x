@@ -931,6 +931,7 @@ def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
     from wrapper.evolve_lock import background_tasks_lock
     from wrapper.fetch_all import get_distinct_user_ids
     logger.info("consolidation v2 后台线程启动，间隔 %ds", interval)
+    _loop = asyncio.new_event_loop()
 
     while _running:
         try:
@@ -942,11 +943,11 @@ def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
                 memory = memory_getter()
                 if memory:
                     # 获取所有 user_id，逐用户处理
-                    user_ids = asyncio.run(get_distinct_user_ids(memory))
+                    user_ids = _loop.run_until_complete(get_distinct_user_ids(memory))
                     logger.info("consolidation: 处理 %d 个用户", len(user_ids))
                     total_merged = 0
                     for uid in user_ids:
-                        merged = asyncio.run(run_consolidation_cycle(memory, user_id=uid))
+                        merged = _loop.run_until_complete(run_consolidation_cycle(memory, user_id=uid))
                         total_merged += merged
                     if total_merged > 0:
                         logger.info("本轮整合 %d 条记忆（%d 个用户）", total_merged, len(user_ids))
@@ -957,6 +958,7 @@ def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
 
         time.sleep(interval)
 
+    _loop.close()
     logger.info("consolidation v2 后台线程已停止")
 
 

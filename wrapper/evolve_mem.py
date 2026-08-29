@@ -255,7 +255,7 @@ def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
     from wrapper.evolve_lock import background_tasks_lock
     from wrapper.fetch_all import get_distinct_user_ids
     logger.info("evolve_mem 后台线程启动，间隔 %ds", interval)
-
+    _loop = asyncio.new_event_loop()
 
     while _running:
         try:
@@ -267,11 +267,11 @@ def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
                 memory = memory_getter()
                 if memory:
                     # 获取所有 user_id，逐用户处理
-                    user_ids = asyncio.run(get_distinct_user_ids(memory))
+                    user_ids = _loop.run_until_complete(get_distinct_user_ids(memory))
                     logger.info("evolve_mem: 处理 %d 个用户", len(user_ids))
                     total_pruned = 0
                     for uid in user_ids:
-                        result = asyncio.run(run_evolve_cycle(memory, user_id=uid))
+                        result = _loop.run_until_complete(run_evolve_cycle(memory, user_id=uid))
                         total_pruned += result.get("pruned", 0)
                     if total_pruned > 0:
                         logger.info("本轮自进化: 清理 %d 条（%d 个用户）", total_pruned, len(user_ids))
@@ -282,6 +282,7 @@ def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
 
         time.sleep(interval)
 
+    _loop.close()
     logger.info("evolve_mem 后台线程已停止")
 
 

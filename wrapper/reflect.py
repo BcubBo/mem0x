@@ -247,12 +247,13 @@ def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
     """后台循环线程。"""
     global _running
     logger.info("reflect 后台线程启动，间隔 %ds", interval)
+    _loop = asyncio.new_event_loop()
 
     while _running:
         try:
             memory = memory_getter()
             if memory:
-                result = asyncio.run(run_reflect_cycle(memory))
+                result = _loop.run_until_complete(run_reflect_cycle(memory))
                 # 过滤掉"系统运行正常"，只统计真正的问题
                 issues = result.get("health", {}).get("issues", [])
                 real_issues = [i for i in issues if i != "系统运行正常"]
@@ -263,6 +264,7 @@ def _background_loop(memory_getter, interval: int = DEFAULT_INTERVAL):
 
         time.sleep(interval)
 
+    _loop.close()
     logger.info("reflect 后台线程已停止")
 
 

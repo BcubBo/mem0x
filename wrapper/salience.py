@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import os
@@ -25,6 +26,17 @@ DEFAULT_HALF_LIFE_DAYS = 30
 
 _schema_checked = False
 _schema_lock = threading.Lock()
+
+# Thread-local event loop（避免 asyncio.run() 每次创建新循环）
+_tl = threading.local()
+
+
+def _get_thread_loop():
+    """获取线程本地 event loop，不存在则创建。"""
+    loop = getattr(_tl, "loop", None)
+    if loop is None or loop.is_closed():
+        _tl.loop = asyncio.new_event_loop()
+    return _tl.loop
 
 
 # ── 数据库操作（使用 db_common 共享模块）──
@@ -69,7 +81,6 @@ def _compute_fsrs_retrievability(memory_id: str) -> Optional[float]:
     try:
         from wrapper.mem0_runtime import get_memory
         from wrapper.fsrs_bridge import compute_retrievability
-        import asyncio as _asyncio
 
         mem = get_memory()
         if not mem:
@@ -86,9 +97,10 @@ def _compute_fsrs_retrievability(memory_id: str) -> Optional[float]:
             return compute_retrievability(metadata, created_at)
 
         try:
-            return _asyncio.run(_fetch())
+            loop = _get_thread_loop()
+            return loop.run_until_complete(_fetch())
         except RuntimeError:
-            loop = _asyncio.new_event_loop()
+            loop = asyncio.new_event_loop()
             try:
                 return loop.run_until_complete(_fetch())
             finally:
@@ -293,7 +305,6 @@ def boost_salience_for_results(results: List[dict]) -> List[dict]:
     # 持久化 FSRS card 到 Qdrant（批量，单次 HTTP）
     if fsrs_updates:
         try:
-            import asyncio as _asyncio
             from wrapper.mem0_runtime import get_memory
             mem = get_memory()
             if mem:
@@ -308,9 +319,10 @@ def boost_salience_for_results(results: List[dict]) -> List[dict]:
                         except Exception as e:
                                 logger.debug("persist FSRS card for %s failed: %s", mid[:16], e)
                 try:
-                    _asyncio.run(_persist_fsrs())
+                    _loop = _get_thread_loop()
+                    _loop.run_until_complete(_persist_fsrs())
                 except RuntimeError:
-                    _loop = _asyncio.new_event_loop()
+                    _loop = asyncio.new_event_loop()
                     try:
                         _loop.run_until_complete(_persist_fsrs())
                     finally:

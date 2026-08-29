@@ -119,16 +119,17 @@ class BM25Encoder:
 
     def save_idf(self) -> None:
         """持久化 IDF 统计到 SQLite（挂载 volume，重启不丢）。"""
-        try:
-            conn = sqlite3.connect(_IDF_DB)
-            conn.execute("CREATE TABLE IF NOT EXISTS bm25_idf (key TEXT PRIMARY KEY, value TEXT)")
-            conn.execute("REPLACE INTO bm25_idf VALUES (?, ?)", ("doc_count", str(self.doc_count)))
-            conn.execute("REPLACE INTO bm25_idf VALUES (?, ?)", ("total_length", str(self.total_length)))
-            conn.execute("REPLACE INTO bm25_idf VALUES (?, ?)", ("doc_freq", json.dumps(dict(self.doc_freq), ensure_ascii=False)))
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            logger.warning("BM25 IDF 持久化失败: %s", e)
+        with _idf_write_lock:
+            try:
+                conn = sqlite3.connect(_IDF_DB)
+                conn.execute("CREATE TABLE IF NOT EXISTS bm25_idf (key TEXT PRIMARY KEY, value TEXT)")
+                conn.execute("REPLACE INTO bm25_idf VALUES (?, ?)", ("doc_count", str(self.doc_count)))
+                conn.execute("REPLACE INTO bm25_idf VALUES (?, ?)", ("total_length", str(self.total_length)))
+                conn.execute("REPLACE INTO bm25_idf VALUES (?, ?)", ("doc_freq", json.dumps(dict(self.doc_freq), ensure_ascii=False)))
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                logger.warning("BM25 IDF 持久化失败: %s", e)
 
     def load_idf(self) -> bool:
         """从 SQLite 加载 IDF 统计。返回是否成功。"""
@@ -149,6 +150,9 @@ class BM25Encoder:
             logger.warning("BM25 IDF 加载失败: %s", e)
             return False
 
+
+# 持久化写锁（防止并发 save_idf 导致 SQLite 索引损坏）
+_idf_write_lock = threading.Lock()
 
 # 全局单例
 _bm25_encoder: BM25Encoder | None = None

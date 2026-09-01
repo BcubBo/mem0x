@@ -25,3 +25,18 @@ docs/
 .pytest_cache/
 test_unified_api.sh
 .coverage
+
+# NER terms config (contains local customizations)
+wrapper/ner_terms.json
+
+# Training code (not for production)
+trainer/
+Dockerfile.trainer
+config_*.cfg
+
+# Training artifacts
+config.cfg
+.count
+
+# Trainer tests
+tests/test_ner_trainer.py

@@ -1,14 +1,12 @@
-"""NER 训练管线 — 后台线程，周期性采集 → 标注 → 持久化 → 训练。
+"""NER 数据管线 — 后台线程，周期性采集 → 标注 → 持久化 → 导出 .spacy 语料。
 
-训练管线架构（5层）：
+管线架构：
   ① 数据采集层 — ner_buffer（tags_hook push）
   ② 弱监督标注层 — ner_labeler（规则 + spaCy 银标签）
-  ③ 训练层 — nlp.update() 增量训练，产出到 data/ner_models/  ← 阶段2a
-  ④ 模型管理层 — 版本控制 + 原子替换（阶段2b/2c）
-  ⑤ 推理层 — spacy_ner.py 从 registry 加载（阶段2c）
+  ③ 语料导出层 — SQLite → train.spacy + dev.spacy（供独立 trainer 容器消费）
 
-本模块实现 ①+②+③ 的编排：drain buffer → label → 存入 SQLite → 满足条件时触发训练。
-训练产出模型文件到 data/ner_models/，不修改推理层 spacy_ner.py。
+本模块实现 ①+②+③ 的编排：drain buffer → label → 存入 SQLite → 导出 .spacy 语料。
+训练由独立的 trainer 容器负责（spacy train CLI），本模块不执行训练。
 """
 
 import json
@@ -37,6 +35,7 @@ class NERTrainingStore:
 
     def _create_tables(self) -> None:
         with self._lock:
+            # ① 建表（不带 index，避免旧表列不存在导致 executescript 失败）
             self._conn.executescript("""
                 CREATE TABLE IF NOT EXISTS ner_samples (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,8 +45,20 @@ class NERTrainingStore:
                     source TEXT DEFAULT 'weak_supervision',
                     created_at REAL
                 );
+            """)
+            # ② 迁移：给旧表补缺失列
+            cols = {row[1] for row in self._conn.execute("PRAGMA table_info(ner_samples)").fetchall()}
+            if "created_at" not in cols:
+                self._conn.execute("ALTER TABLE ner_samples ADD COLUMN created_at REAL")
+                self._conn.execute("UPDATE ner_samples SET created_at = 0 WHERE created_at IS NULL")
+                logger.info("ner_store: 迁移添加 created_at 列")
+            if "point_id" not in cols:
+                self._conn.execute("ALTER TABLE ner_samples ADD COLUMN point_id TEXT")
+                logger.info("ner_store: 迁移添加 point_id 列")
+            # ③ 索引（迁移后再建，确保列存在）
+            self._conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_ner_samples_created
-                    ON ner_samples(created_at);
+                    ON ner_samples(created_at)
             """)
             self._conn.commit()
 
@@ -114,7 +125,6 @@ _running = False
 _thread: threading.Thread | None = None
 _store: NERTrainingStore | None = None
 
-
 def _get_store() -> NERTrainingStore:
     global _store
     if _store is None:
@@ -122,78 +132,114 @@ def _get_store() -> NERTrainingStore:
     return _store
 
 
-def _pipeline_loop(get_memory_fn, interval: int = 120) -> None:
-    """后台循环：drain → label → save → train（满足条件时）。"""
-    global _running
-    logger.info("ner_pipeline 启动 (interval=%ds)", interval)
+def _convert_corpus(min_samples: int = 10) -> bool:
+    """从 SQLite 导出 .spacy 语料文件（train.spacy + dev.spacy）到 data/corpus/。
 
-    from wrapper.ner_trainer import get_trainer
-    trainer = get_trainer()
-    train_interval = interval * 5  # 训练检查间隔 = 5倍采集间隔
-    last_train_check = 0.0
+    供独立 trainer 容器通过 spacy train CLI 消费。
+    返回 True 表示导出成功。
+    """
+    try:
+        import spacy
+        from spacy.tokens import DocBin
+    except ImportError:
+        logger.error("spacy 未安装，跳过语料导出")
+        return False
 
-    while _running:
-        try:
-            from wrapper.ner_buffer import get_buffer
-            from wrapper.ner_labeler import label_batch
-
-            buf = get_buffer()
-            if len(buf) == 0:
-                time.sleep(interval)
-                continue
-
-            # drain 一批样本
-            raw_samples = buf.drain(max_items=100)
-            if not raw_samples:
-                time.sleep(interval)
-                continue
-
-            # 弱监督标注
-            labeled = label_batch(raw_samples)
-            if labeled:
-                store = _get_store()
-                saved = store.save_batch(labeled)
-                logger.info(
-                    "ner_pipeline: drain=%d labeled=%d saved=%d total_db=%d",
-                    len(raw_samples), len(labeled), saved, store.count(),
-                )
-
-            # 训练检查（不每次循环都检查，按 train_interval 间隔）
-            now = time.time()
-            if now - last_train_check >= train_interval:
-                last_train_check = now
-                total = store.count() if labeled else _get_store().count()
-                if trainer.should_train(total):
-                    logger.info("触发训练: total_samples=%d", total)
-                    # 从 SQLite 加载全部样本用于训练
-                    all_samples = _load_all_samples()
-                    if all_samples:
-                        meta = trainer.train(all_samples)
-                        if meta:
-                            logger.info(
-                                "训练完成: version=%s f1=%.3f path=%s",
-                                meta["version"], meta["f1"], meta["model_path"],
-                            )
-                        else:
-                            logger.info("训练未产出模型（F1不足或样本质量不够）")
-
-        except Exception as e:
-            logger.warning("ner_pipeline 循环异常: %s", e)
-
-        time.sleep(interval)
-
-
-def _load_all_samples() -> list[dict]:
-    """从 SQLite 加载全部训练样本（供训练器使用）。"""
     store = _get_store()
     with store._lock:
         rows = store._conn.execute(
             "SELECT text, entities_json FROM ner_samples"
         ).fetchall()
-    return [
-        {"text": r[0], "entities": json.loads(r[1])}
-        for r in rows
-    ]
+
+    if len(rows) < min_samples:
+        logger.debug("样本数 %d < %d，跳过导出", len(rows), min_samples)
+        return False
+
+    samples = [{"text": r[0], "entities": json.loads(r[1])} for r in rows]
+
+    import random
+    random.shuffle(samples)
+    dev_size = max(1, int(len(samples) * 0.1))
+    dev_samples = samples[:dev_size]
+    train_samples = samples[dev_size:]
+
+    try:
+        nlp = spacy.load("zh_core_web_sm")
+    except Exception as e:
+        logger.error("加载基础模型失败: %s", e)
+        return False
+
+    def _build_docbin(nlp, samples_list):
+        db = DocBin()
+        for s in samples_list:
+            text = s.get("text", "")
+            if not text:
+                continue
+            doc = nlp.make_doc(text)
+            ents = []
+            for start, end, label in s.get("entities", []):
+                span = doc.char_span(start, end, label=label, alignment_mode="contract")
+                if span is not None:
+                    ents.append(span)
+            doc.ents = spacy.util.filter_spans(ents)
+            db.add(doc)
+        return db
+
+    data_dir = os.environ.get("MEM0X_DATA_DIR", "data")
+    corpus_dir = os.path.join(data_dir, "corpus")
+    os.makedirs(corpus_dir, exist_ok=True)
+
+    train_db = _build_docbin(nlp, train_samples)
+    dev_db = _build_docbin(nlp, dev_samples)
+    train_db.to_disk(os.path.join(corpus_dir, "train.spacy"))
+    dev_db.to_disk(os.path.join(corpus_dir, "dev.spacy"))
+
+    logger.info(
+        "语料导出完成: train=%d dev=%d → %s/",
+        len(train_samples), len(dev_samples), corpus_dir,
+    )
+    return True
+
+
+def _pipeline_loop(get_memory_fn, interval: int = 120) -> None:
+    """后台循环：drain → label → save → 导出 .spacy 语料。"""
+    global _running
+    logger.info("ner_pipeline 启动 (interval=%ds)", interval)
+
+    convert_interval = interval * 5  # 语料导出间隔 = 5倍采集间隔
+    last_convert_check = 0.0
+
+    # 延迟导入（避免循环启动时的导入开销）
+    from wrapper.ner_buffer import get_buffer
+    from wrapper.ner_labeler import label_batch
+
+    while _running:
+        try:
+            buf = get_buffer()
+
+            # ── 采集阶段：drain → label → save ──
+            if len(buf) > 0:
+                raw_samples = buf.drain(max_items=100)
+                if raw_samples:
+                    labeled = label_batch(raw_samples)
+                    if labeled:
+                        store = _get_store()
+                        saved = store.save_batch(labeled)
+                        logger.info(
+                            "ner_pipeline: drain=%d labeled=%d saved=%d total_db=%d",
+                            len(raw_samples), len(labeled), saved, store.count(),
+                        )
+
+            # ── 语料导出：独立于 buffer 状态，按时间间隔检查 ──
+            now = time.time()
+            if now - last_convert_check >= convert_interval:
+                last_convert_check = now
+                _convert_corpus()
+
+        except Exception as e:
+            logger.warning("ner_pipeline 循环异常: %s", e)
+
+        time.sleep(interval)
 
 
 def start(get_memory_fn, interval: int = 120) -> None:
@@ -225,33 +271,53 @@ def stop() -> None:
     logger.info("ner_pipeline 已停止")
 
 
-def get_stats() -> dict:
-    """管线状态（供 /health 使用）。"""
+def trigger_convert(force: bool = False) -> dict[str, Any]:
+    """手动触发语料导出（供 API 调用）。返回状态 dict。
+
+    force=True 时跳过样本数量检查（直接导出）。
+    """
+    total = _get_store().count()
+    ok = _convert_corpus(min_samples=0 if force else 10)
+    return {
+        "exported": ok,
+        "force": force,
+        "total_samples": total,
+    }
+
+# 向后兼容
+trigger_train = trigger_convert
+
+
+def get_status() -> dict:
+    """获取 NER 数据管线完整状态（供 API 调用）。"""
     from wrapper.ner_buffer import get_buffer
+
     store_count = 0
     try:
         store_count = _get_store().count()
     except Exception:
         pass
 
-    # 训练器状态
-    training_info = {}
-    try:
-        from wrapper.ner_trainer import get_trainer
-        latest = get_trainer().get_latest_model()
-        if latest:
-            training_info = {
-                "latest_version": latest.get("version"),
-                "latest_f1": latest.get("f1"),
-                "latest_model_path": latest.get("model_path"),
-                "model_count": len(get_trainer().list_models()),
+    # 语料文件状态
+    data_dir = os.environ.get("MEM0X_DATA_DIR", "data")
+    corpus_dir = os.path.join(data_dir, "corpus")
+    corpus_info = {}
+    for name in ("train.spacy", "dev.spacy"):
+        path = os.path.join(corpus_dir, name)
+        if os.path.exists(path):
+            corpus_info[name] = {
+                "size": os.path.getsize(path),
+                "mtime": os.path.getmtime(path),
             }
-    except Exception:
-        pass
 
     return {
         "running": _running,
         "buffer": get_buffer().stats,
         "training_samples": store_count,
-        "training": training_info,
+        "corpus": corpus_info,
     }
+
+
+def get_stats() -> dict:
+    """管线状态（供 /health 使用，向后兼容）。"""
+    return get_status()

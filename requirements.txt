@@ -9,4 +9,3 @@ spacy
 redis>=5.0.0
 fsrs>=6.0.0
 spacy-pkuseg>=1.0.0
-spacy-curated-transformers>=0.2.2

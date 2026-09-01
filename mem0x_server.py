@@ -516,6 +516,8 @@ _RATE_LIMITS = {
     "/reflect": (5, 60),
     "/reconcile": (3, 60),        # 对账：低频
     "/reconcile/stats": (30, 60), # 统计查询：轻量
+    "/ner/train": (3, 300),       # NER训练：5分钟3次（训练耗时）
+    "/ner/status": (30, 60),      # NER状态：轻量
 }
 _DEFAULT_LIMIT = (120, 60)  # 其他端点
 
@@ -1578,6 +1580,41 @@ async def reconcile_stats():
     import asyncio
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, reconcile.get_stats)
+
+
+# ── NER 训练端点 ──
+
+class NERTrainRequest(BaseModel):
+    force: bool = Field(default=False, description="是否强制训练（跳过样本数量检查）")
+
+
+@app.post("/ner/train", dependencies=[Depends(verify_api_key), Depends(rate_limit)])
+async def ner_train(req: Optional[NERTrainRequest] = None):
+    """触发 NER 训练（通过信号文件通知trainer容器）。
+
+    force=true 时跳过条件检查。
+    """
+    import json
+    import time as _time
+    data_dir = os.environ.get("MEM0X_DATA_DIR", "/app/data")
+    signal_path = os.path.join(data_dir, "ner_train_request.json")
+    force = req.force if req else False
+    signal = {"requested_at": _time.time(), "force": force, "requested_by": "api_manual"}
+    try:
+        with open(signal_path, "w") as f:
+            json.dump(signal, f)
+        return {"status": "signal_sent", "force": force}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Signal failed: {e}")
+
+
+@app.get("/ner/status", dependencies=[Depends(verify_api_key), Depends(rate_limit)])
+async def ner_status():
+    """查询 NER 状态（corpus文件 + 模型信息）。"""
+    import asyncio
+    from wrapper.ner_pipeline import get_status
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, get_status)
 
 
 # ── Working Memory 端点 ──
